@@ -69,7 +69,27 @@ right here in [`src/lib/`](src/lib/) and the method is written up in
 Grades are a **reproducible score vector** (subscores + weights + rubric version), so
 anyone can re-derive the A/B/C. On a corpus of **68 real official skills** (Anthropic,
 Cloudflare, obra) the engine produces **0 false blocks** — the credibility test, run in
-public at [skillmoo.com/how-we-rate](https://skillmoo.com/how-we-rate/).
+public at [skillmoo.com/how-we-rate](https://skillmoo.com/how-we-rate/). (That's a
+*scoped* claim on the audited gold set, not a promise of global perfection — the
+[roadmap](#roadmap) tracks the ongoing zero-false-positive work.)
+
+## How is this different?
+
+| | **SkillMOO** | Eyeball the file | Generic linter | Ask an LLM | Store stars/badges |
+|---|:---:|:---:|:---:|:---:|:---:|
+| 100% local, nothing uploaded | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Deterministic & reproducible (as a score vector) | ✅ | ❌ | ✅ | ❌ | — |
+| **Capability ≠ intent** (no false block on a legit key-reader) | ✅ | 🤷 | ❌ | 🤷 | — |
+| Scans the **bundled scripts**, not just the manifest | ✅ | ❌ | ~ | ❌ | ❌ |
+| Cross-skill conflict / trigger-shadow detection | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Token-cost / bloat scoring | ✅ | ❌ | ❌ | 🤷 | ❌ |
+| Un-gameable by prompt-injection in the skill body | ✅ | ✅ | ✅ | ❌ | — |
+| One command, CI-gateable | ✅ | ❌ | ✅ | ❌ | ❌ |
+
+The row that matters most is **capability ≠ intent**: a naive scanner flags every skill
+that reads a key or calls the network, which just trains you to ignore it (the npm-audit
+failure mode). SkillMOO reserves **block** for a real malice co-signal — so a red grade
+means something.
 
 ## Badge
 
@@ -107,6 +127,24 @@ This repo is the **free, local CLI + detection engine** — open so the rating i
 auditable. The hosted service at [skillmoo.com](https://skillmoo.com) adds the rated
 store, per-skill pages, measured-efficacy certification, and Pro model-optimize.
 **Ratings are never for sale** — we monetize the *fix* and *teams*, never the score.
+
+## Roadmap
+
+SkillMOO is actively developed. Near-term:
+
+- **Wider coverage** — auto-discover more agent-skill locations (Codex / Cursor / Cline / Copilot) out of the box.
+- **Deeper detection** — non-English (CJK-first) injection/exfil lexicon, look-alike/typosquat domain detection, description↔body contradiction checks, nested-reference resolution.
+- **Fewer false positives** — an ongoing zero-false-positive push: dual-use chat webhooks (Slack/Discord) as *disclosure* not *exfil*, injection-*defense* phrasing recognized as safe, scope-aware trigger scoring.
+- **Richer output** — SARIF for security dashboards, documented exit codes, per-finding fix hints.
+- **Org policy** — a repo-level `.skillmoo.json` to set the CI gate threshold.
+
+Found a detection gap or a false positive? **[Open an issue](https://github.com/shawnc000/skillmoo/issues/new/choose)** — the "wrong grade / false positive" template is the single highest-value contribution.
+
+## Star this repo ⭐
+
+If SkillMOO caught one unsafe skill for you — or one bloated one taxing every call —
+please **[give it a star](https://github.com/shawnc000/skillmoo)**. Stars are how the
+next person finds a tool they can trust *before* they install a skill.
 
 ## License
 
