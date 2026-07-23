@@ -1,0 +1,52 @@
+{
+  "name": "skillmoo",
+  "version": "0.3.10",
+  "description": "Grade the AI agent skills you've installed — safety, token bloat, and conflicts. 100% local static analysis, no model, no signup.",
+  "type": "module",
+  "bin": {
+    "skillmoo": "bin/skillmoo.mjs"
+  },
+  "files": [
+    "bin/skillmoo.mjs",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "codex",
+    "cursor",
+    "agent",
+    "agent-skills",
+    "skill",
+    "skill-md",
+    "llm",
+    "ai",
+    "security",
+    "lint",
+    "tokens",
+    "audit"
+  ],
+  "homepage": "https://skillmoo.com",
+  "bugs": "https://github.com/shawnc000/skillmoo/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shawnc000/skillmoo.git"
+  },
+  "license": "MIT",
+  "author": "SkillMOO (https://skillmoo.com)",
+  "scripts": {
+    "dev": "tsx cli/index.ts",
+    "build": "node scripts/build-cli.mjs",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "node scripts/build-cli.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.24.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

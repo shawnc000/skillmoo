@@ -1,0 +1,22 @@
+name: 'SkillMOO — grade your agent skills'
+description: 'CI gate for SKILL.md files: static-analysis safety, token-bloat, and conflict grading. Fails the build on unsafe skills.'
+author: 'SkillMOO'
+branding:
+  icon: shield
+  color: orange
+inputs:
+  dir:
+    description: 'An extra skills directory to scan (repo-relative). Optional — auto-detects .claude/skills, .codex/skills, .cursor/rules, etc.'
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    - name: skillmoo scan
+      shell: bash
+      # `scan` exits non-zero (2) when any skill is unsafe → fails the build.
+      # Read-only + local: it never edits your files and (with --no-share) never uploads.
+      run: npx --yes skillmoo@latest scan --no-share ${{ inputs.dir != '' && format('--dir {0}', inputs.dir) || '' }}
