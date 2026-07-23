@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: SkillMOO website & rated store
+    url: https://skillmoo.com
+    about: Browse rated skills, per-skill reports, and the hosted optimizer.
+  - name: How we rate (method)
+    url: https://github.com/shawnc000/skillmoo/blob/main/docs/how-we-rate.md
+    about: The grading method — safety, token cost, conflicts, and the honesty rules.

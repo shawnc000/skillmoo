@@ -4,6 +4,7 @@
 > The "Consumer Reports / Rotten Tomatoes for `SKILL.md`." 100% local, no model, no signup.
 
 [![npm](https://img.shields.io/npm/v/skillmoo?color=f4a159&label=npm)](https://www.npmjs.com/package/skillmoo)
+[![CI](https://github.com/shawnc000/skillmoo/actions/workflows/ci.yml/badge.svg)](https://github.com/shawnc000/skillmoo/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-16b981)](LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D18-16b981)](package.json)
 ![local](https://img.shields.io/badge/100%25-local%20%C2%B7%20read--only-8b9096)
