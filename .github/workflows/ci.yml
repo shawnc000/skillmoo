@@ -17,5 +17,9 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
-      - name: smoke test — scan the example skills
-        run: node bin/skillmoo.mjs scan --dir examples/demo-skills --no-share
+      - name: smoke test — the bundle runs and grades correctly
+        run: |
+          node bin/skillmoo.mjs --version
+          # scan exits 2 when it flags an unsafe skill (the CI-gate feature); the demo
+          # set includes one on purpose, so exit 2 IS the pass here.
+          node bin/skillmoo.mjs scan --dir examples/demo-skills --no-share || test $? -eq 2
