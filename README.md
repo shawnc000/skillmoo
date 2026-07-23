@@ -3,29 +3,42 @@
 > Know which of your AI agent **skills** are unsafe, bloated, or conflicting — before you trust them.
 > The "Consumer Reports / Rotten Tomatoes for `SKILL.md`." 100% local, no model, no signup.
 
-**→ [skillmoo.com](https://skillmoo.com)** · **[npm](https://www.npmjs.com/package/skillmoo)** · **[how we rate](docs/how-we-rate.md)**
+[![npm](https://img.shields.io/npm/v/skillmoo?color=f4a159&label=npm)](https://www.npmjs.com/package/skillmoo)
+[![license](https://img.shields.io/badge/license-MIT-16b981)](LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D18-16b981)](package.json)
+![local](https://img.shields.io/badge/100%25-local%20%C2%B7%20read--only-8b9096)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-f4a159)](CONTRIBUTING.md)
 
-Agent skills (`SKILL.md` files for Claude Code, OpenAI Codex, Cursor, Copilot, Cline)
-became software — but the controls didn't follow. You can't tell which of your skills
-reads your keys, quietly burns tokens on every call, or fights another skill for the
-same trigger. **SkillMOO grades every skill on safety, token cost, and conflicts**
-with real, deterministic static analysis — and one-click-optimizes the safe wins.
+**→ [skillmoo.com](https://skillmoo.com)** · **[npm](https://www.npmjs.com/package/skillmoo)** · **[how we rate](docs/how-we-rate.md)**
 
 ```bash
 npx skillmoo scan
 ```
 
-100% local: it finds every skill installed across Claude Code / Codex / Cursor /
-Copilot / Cline, grades each (safety · bloat · conflicts), and prints a report.
-**Read-only — it never edits your files, and never uploads your file contents.**
+<p align="center"><img src="assets/scan-demo.svg" alt="skillmoo scan grading five example skills — an F for a credential-exfiltration skill, an A·review for a legit key-using skill, and a trigger conflict" width="820"></p>
 
-```
-  drop    aws-helper          F   reads ~/.aws/credentials + network egress → likely exfiltration
-  narrow  git-helper          B   trigger "any git task" shadows 3 other skills
-  keep    pr-review           A   lean, sharp trigger, no risky behavior
-  ────────────────────────────────────────────────────────────────────────
-  12 skills · 1 unsafe · 3 optimizable · 18,402 tokens/call total
-```
+Agent skills (`SKILL.md` files for Claude Code, OpenAI Codex, Cursor, Copilot, Cline)
+became software — but the controls didn't follow. You can't tell which of your skills
+reads your keys, quietly burns tokens on every call, or fights another skill for the
+same trigger. **SkillMOO grades every skill on safety, token cost, and conflicts** with
+real, deterministic static analysis (no model, no signup) — and one-click-optimizes the
+safe wins. It's **100% local and read-only**: it never edits your files, and never
+uploads your file contents.
+
+## What one scan catches
+
+The demo above is [five real example skills](examples/) — and it's the whole thesis in
+one screen:
+
+- **🛑 It catches the real theft.** `aws-deployer` reads `~/.aws/credentials` and POSTs
+  it to an external host → **F, drop**. That's an exfiltration chain, not a lint nit.
+- **🟢 It doesn't false-accuse.** `weather` also reads a key and calls the network — but
+  legitimately → **A, review**, never a false "block." **Capability ≠ intent** is the
+  hard part every naive scanner gets wrong, and the reason you can trust the F above.
+- **⚠️ It sees across skills.** `git-helper`'s "any git task" trigger *shadows*
+  `commit-writer` — the top cause of an agent firing the wrong skill.
+
+Reproduce it yourself: `npx skillmoo scan --dir examples/demo-skills --no-share`.
 
 ## Commands
 

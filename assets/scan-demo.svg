@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="560" viewBox="0 0 820 560" font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace">
+  <defs>
+    <style>
+      .t { font-size: 14px; }
+      .dim { fill: #8b9096; }
+      .txt { fill: #d7dade; }
+      .orange { fill: #f4a159; }
+      .good { fill: #16b981; }
+      .warn { fill: #e0982f; }
+      .crit { fill: #ef4b5a; }
+      .b { font-weight: 700; }
+    </style>
+  </defs>
+  <!-- window -->
+  <rect x="1" y="1" width="818" height="558" rx="14" fill="#1b1d1f" stroke="#33363a" stroke-width="1.5"/>
+  <!-- title bar -->
+  <rect x="1.5" y="1.5" width="817" height="42" rx="14" fill="#232629"/>
+  <rect x="1.5" y="28" width="817" height="16" fill="#232629"/>
+  <circle cx="26" cy="22" r="6" fill="#ef4b5a"/>
+  <circle cx="46" cy="22" r="6" fill="#e0982f"/>
+  <circle cx="66" cy="22" r="6" fill="#16b981"/>
+  <text x="410" y="27" text-anchor="middle" class="t dim">skillmoo — scan</text>
+
+  <g class="t">
+    <!-- prompt -->
+    <text x="26" y="78"><tspan class="good b">$</tspan><tspan class="txt"> npx skillmoo scan</tspan></text>
+
+    <text x="26" y="112"><tspan class="orange b">◇ SkillMOO scan</tspan><tspan class="dim"> · v0.3.10 · 100% local, read-only</tspan></text>
+
+    <text x="26" y="146"><tspan class="dim">scan  Claude Code · user   ~/.claude/skills</tspan><tspan class="txt b">   5 skills</tspan></text>
+    <text x="26" y="168" class="dim">──────────────────────────────────────────────────────────────</text>
+
+    <text x="26" y="196"><tspan class="txt">safety     </tspan><tspan class="crit b">✕ 1 unsafe</tspan><tspan class="txt">   </tspan><tspan class="warn b">! 1 review</tspan><tspan class="txt">   </tspan><tspan class="good">✓ 3 ok</tspan></text>
+    <text x="26" y="220"><tspan class="txt">bloat      </tspan><tspan class="good">✓ none bloated</tspan></text>
+    <text x="26" y="244"><tspan class="txt">conflicts  </tspan><tspan class="warn">⚠ 1 pair</tspan></text>
+
+    <!-- rows -->
+    <text x="26" y="286"><tspan class="crit b">F</tspan><tspan class="crit">  ✕  </tspan><tspan class="txt b">aws-deployer </tspan><tspan class="dim">  credential read + network egress → likely exfiltration</tspan></text>
+    <text x="26" y="312"><tspan class="good b">A</tspan><tspan class="warn">  !  </tspan><tspan class="txt b">weather      </tspan><tspan class="dim">  reads WEATHER_API_KEY + calls its API — </tspan><tspan class="warn">review, not blocked</tspan></text>
+    <text x="26" y="338"><tspan class="good b">A</tspan><tspan class="good">  ✓  </tspan><tspan class="txt b">commit-writer</tspan><tspan class="dim">  clean</tspan></text>
+    <text x="26" y="364"><tspan class="good b">A</tspan><tspan class="good">  ✓  </tspan><tspan class="txt b">pr-review    </tspan><tspan class="dim">  clean</tspan></text>
+    <text x="26" y="390"><tspan class="good b">B</tspan><tspan class="good">  ✓  </tspan><tspan class="txt b">git-helper   </tspan><tspan class="dim">  clean · trigger too broad</tspan></text>
+
+    <text x="26" y="430"><tspan class="dim">conflicts (worst first)</tspan></text>
+    <text x="26" y="454"><tspan class="txt">  commit-writer </tspan><tspan class="dim">⇄</tspan><tspan class="txt"> git-helper </tspan><tspan class="dim">  both fire on: </tspan><tspan class="warn">commit, git</tspan></text>
+
+    <text x="26" y="500" class="dim">─ capability ≠ intent: a skill that legitimately reads a key is <tspan class="warn">review</tspan>, never a false block.</text>
+    <text x="26" y="528"><tspan class="orange">→</tspan><tspan class="dim"> full report + one-click optimize at </tspan><tspan class="orange">skillmoo.com</tspan></text>
+  </g>
+</svg>
