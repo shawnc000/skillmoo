@@ -36,10 +36,12 @@ export interface OptimizeResult {
 }
 
 const FILLER: { re: RegExp; to?: string; label: string }[] = [
-  { re: /\s*It helps you with all of your[^.]*\./gi, label: 'Removed a filler sentence from the description' },
+  // Bounded to a SINGLE sentence ([^.\n], not the old [^.]* which spanned newlines and
+  // could swallow a whole ## Guardrails section up to the next period).
+  { re: /\s*It helps you with all of your[^.\n]{0,80}\./gi, label: 'Removed a filler sentence from the description' },
   { re: /\s*and various related things\b\.?/gi, label: 'Removed vague “various related things”' },
   { re: /\bof any kind\b/gi, label: 'Removed “of any kind”' },
-  { re: /,?\s*that you should imitate closely[^.]*(?=\n|$)/gi, label: 'Trimmed a verbose example preamble' },
+  { re: /,?\s*that you should imitate closely[^.\n]{0,80}(?=\n|$)/gi, label: 'Trimmed a verbose example preamble' },
   { re: /\s*(?:very )?carefully step by step\b/gi, label: 'Removed “carefully step by step” padding' },
   // Safe wordiness compression (meaning-preserving) — fewer tokens every call.
   { re: /\bin order to\b/gi, to: 'to', label: 'Shortened “in order to” → “to”' },
@@ -53,24 +55,25 @@ const FILLER: { re: RegExp; to?: string; label: string }[] = [
   { re: /\bit is important to (?:note|remember) that\b[\s,]*/gi, label: 'Removed “it is important to note that” filler' },
 ]
 
-/** Drop exact/near-duplicate prose lines (never touches fenced code blocks). */
+/** Collapse CONSECUTIVE duplicate prose lines (never touches fenced code blocks). Only
+ *  adjacent repeats are removed — a line intentionally restated in a DIFFERENT section
+ *  (a guardrail repeated per section, a Before/After template pair) is left intact, so
+ *  optimize never silently changes meaning while reporting a "win". */
 function dedupeProse(md: string): { text: string; removed: number } {
   const lines = md.split('\n')
-  const seen = new Set<string>()
   const out: string[] = []
   let inFence = false
   let removed = 0
+  let lastNorm = ''
   for (const line of lines) {
-    if (/^\s*```/.test(line)) inFence = !inFence
-    // Near-duplicate: same line ignoring case / inner whitespace / trailing
-    // punctuation — safe to collapse (it's the same instruction, reformatted).
+    if (/^\s*```/.test(line)) { inFence = !inFence; out.push(line); lastNorm = ''; continue }
+    // Near-duplicate: same line ignoring case / inner whitespace / trailing punctuation.
     const norm = line.trim().toLowerCase().replace(/\s+/g, ' ').replace(/[.!,;:]+$/, '')
     if (!inFence && norm.length > 20) {
-      if (seen.has(norm)) {
-        removed++
-        continue
-      }
-      seen.add(norm)
+      if (norm === lastNorm) { removed++; continue } // consecutive duplicate — safe to drop
+      lastNorm = norm
+    } else {
+      lastNorm = '' // a blank / short / heading / fence line breaks the run
     }
     out.push(line)
   }
@@ -80,6 +83,32 @@ function dedupeProse(md: string): { text: string; removed: number } {
 /** Fenced code blocks, in order — behavior lives here; optimize must preserve it byte-for-byte. */
 function codeBlocks(md: string): string[] {
   return md.match(/```[\s\S]*?```/g) ?? []
+}
+/** Apply a text edit ONLY to prose lines outside fenced code blocks. Line-based (not a
+ *  greedy regex split) so it is robust to the real Markdown a naive `/```…```/` pairing
+ *  corrupts: ~~~ tilde fences, an UNTERMINATED fence (everything to EOF stays in-fence),
+ *  a stray inline ```, and nested/4-backtick blocks. Conservative by construction — when
+ *  in doubt a line is treated as IN a fence and left untouched, so a code line is never
+ *  edited (which would fail the byte-identical verify gate or, worse, ship corrupted). */
+function editOutsideFences(md: string, edit: (s: string) => string): string {
+  const lines = md.split('\n')
+  const out: string[] = []
+  let fence: string | null = null // the opening marker (``` or ~~~ run) when inside a fence
+  let prose: string[] = []
+  const flush = () => { if (prose.length) { out.push(edit(prose.join('\n'))); prose = [] } }
+  for (const line of lines) {
+    const m = line.match(/^[\s>]*(`{3,}|~{3,})/)
+    if (fence) {
+      // Close only on a matching-or-longer run of the SAME fence char (CommonMark rule).
+      if (m && m[1][0] === fence[0] && m[1].length >= fence.length) fence = null
+      out.push(line) // inside a fence (incl. the closing line) → never edited
+      continue
+    }
+    if (m) { flush(); fence = m[1]; out.push(line); continue } // opening fence → flush + keep
+    prose.push(line) // accumulate consecutive prose so multi-line edits still work
+  }
+  flush()
+  return out.join('\n')
 }
 const GRADE_RANK: Record<string, number> = { A: 0, B: 1, C: 2, D: 3, F: 4 }
 const GATE_RANK: Record<string, number> = { pass: 0, review: 1, block: 2 }
@@ -92,8 +121,11 @@ const secCats = (a: SkillAnalysis) =>
  * FIRST failed invariant (so it's legible), or null when the rewrite is safe.
  */
 function verifyReject(before: SkillAnalysis, after: SkillAnalysis, origMd: string, outMd: string): string | null {
-  // 1) every fenced code block preserved byte-for-byte (order + content).
-  const cb = codeBlocks(origMd)
+  // 1) every fenced code block preserved byte-for-byte (order + content). Normalize line
+  // endings on BOTH sides first: `out` is already LF, so comparing against a raw-CRLF
+  // original would report every code block as "changed" purely on \r\n vs \n and revert
+  // every optimize of a Windows/GitHub-CRLF skill.
+  const cb = codeBlocks(origMd.replace(/\r\n/g, '\n'))
   const ca = codeBlocks(outMd)
   if (cb.length !== ca.length || cb.some((b, i) => b !== ca[i])) return 'a code block changed'
   // 2) skill identity: name must be unchanged; a present description stays present.
@@ -119,18 +151,19 @@ export function optimizeSkill(md: string, opts?: { bundleText?: string; bundleFi
   const changes: string[] = []
   let out = md.replace(/\r\n/g, '\n')
 
-  const wsTrimmed = out
-    .split('\n')
-    .map((l) => l.replace(/[ \t]+$/, ''))
-    .join('\n')
+  // Trailing-whitespace trim — OUTSIDE fences only, so a trailing space inside a code
+  // block is never altered (which would fail the byte-identical check and revert the
+  // whole optimize, silently no-op-ing skills that have real prose wins available).
+  const wsTrimmed = editOutsideFences(out, (s) => s.split('\n').map((l) => l.replace(/[ \t]+$/, '')).join('\n'))
   if (wsTrimmed !== out) {
     out = wsTrimmed
     changes.push('Trimmed trailing whitespace')
   }
 
   for (const f of FILLER) {
-    if (f.re.test(out)) {
-      out = out.replace(f.re, f.to ?? '')
+    const applied = editOutsideFences(out, (s) => s.replace(f.re, f.to ?? ''))
+    if (applied !== out) {
+      out = applied
       changes.push(f.label)
     }
   }
@@ -141,7 +174,9 @@ export function optimizeSkill(md: string, opts?: { bundleText?: string; bundleFi
     changes.push(`Removed ${dd.removed} duplicate line${dd.removed > 1 ? 's' : ''}`)
   }
 
-  out = out.replace(/\n{3,}/g, '\n\n').trimEnd() + '\n'
+  // Collapse 3+ blank lines → 2, OUTSIDE fences (a code block may legitimately contain
+  // blank lines and must stay byte-identical).
+  out = editOutsideFences(out, (s) => s.replace(/\n{3,}/g, '\n\n')).trimEnd() + '\n'
 
   let after = analyzeSkill(out, opts)
 

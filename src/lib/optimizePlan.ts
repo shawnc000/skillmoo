@@ -71,7 +71,12 @@ export function optimizePlan(a: SkillAnalysis, o: OptimizeResult, split?: SplitR
   // A deterministic progressive-disclosure restructure is a REAL deliverable result
   // (not a suggestion) → it counts as a free win we hand the user.
   const canSplit = !!split?.applied
-  const hasFreeWin = o.savedPct > 0 || o.resolved.length > 0 || canSplit
+  // A MEANINGFUL free win — not a cosmetic 1% filler swap ("in order to" → "to" on a small
+  // skill) that flips an already-clean skill into a "here's your optimized version" flow and
+  // presents a rounding-error edit as a real improvement. Require a real token saving
+  // (≥3% or ≥25 tokens), a genuinely cleared finding, or a split; otherwise it's optimal/plan.
+  const meaningfulSave = o.savedPct >= 3 || o.tokensBefore - o.tokensAfter >= 25
+  const hasFreeWin = meaningfulSave || o.resolved.length > 0 || canSplit
 
   // limiting axis = biggest weighted deficit among the axes that are actually below par.
   const deficits = (['structure', 'trigger', 'tokens', 'risk'] as AxisKey[])
