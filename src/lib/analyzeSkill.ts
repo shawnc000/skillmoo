@@ -784,10 +784,34 @@ const RISK_RULES: Rule[] = [
   },
 ]
 
-// A description "says WHEN" if it names a trigger. Broadened beyond the one English phrase
-// "use when": imperative "use for/to", "invoked during", "trigger on", and CJK cues
-// (用于 / 当…时 / …时使用 / 适用于). The goal is a concrete trigger, not one exact phrasing.
-const TRIGGER_CUES = /\buse\s+(?:this\s+|it\s+)?(?:skill\s+)?(?:when|whenever|for|to|if|during|while|on|with|after|before)\b|\bwhen(?:ever)?\s+(?:you|the\s+user|a\b|an\b|the\b|asked|reviewing|writing|generating|creating|working|running|editing|processing|handling|dealing|building|debugging)\b|\btrigger\w*\s+(?:on|when|whenever|if|for)\b|\b(?:invoked?|activated?|called?|triggered?|used?|runs?)\s+(?:when|whenever|during|for|on|if|to|before|after|while)\b|\bfor\s+(?:reviewing|writing|generating|analy[sz]ing|debugging|creating|building|converting|formatting|extracting|parsing|validating|summari[sz]ing|deploying|testing|refactoring|editing|processing|handling)\b|用于|用来|适用于|使用场景|当[^，。！？\n]{1,40}?(?:时|时候)|[^，。！？\n]{1,24}?时使用|在[^，。！？\n]{1,40}?时|需要[^，。！？\n]{1,24}?时/i
+/**
+ * The two size budgets in the published Agent Skills spec, quoted so the assertion is
+ * traceable to the authority rather than to a hand-picked number:
+ *   "Instructions (< 5000 tokens recommended): The full SKILL.md body is loaded when the
+ *    skill is activated"
+ *   "Keep your main SKILL.md under 500 lines."
+ * — https://agentskills.io/specification (Progressive disclosure)
+ */
+const SPEC_BODY_TOKENS = 5000
+const SPEC_BODY_LINES = 500
+
+/**
+ * A description "says WHEN" if it names a trigger — and the test has to be STRUCTURAL,
+ * not a list of blessed phrasings. The enumerated version missed three shapes that the
+ * reference implementation actually uses, and each miss was a false "vague trigger" on a
+ * well-written official skill:
+ *   1. `whenever:` — a colon-introduced trigger LIST ("whenever: the prompt names …").
+ *      The old pattern required whenever to be followed by one of ~15 blessed words.
+ *   2. `TRIGGER —` — a labelled trigger section. The old pattern required trigger to be
+ *      followed by on/when/whenever/if/for, so any punctuation defeated it.
+ *   3. `for <any gerund>` — the old list held 18 hand-picked gerunds, so "for styling
+ *      artifacts" (theme-factory) and "for interacting with … testing" (webapp-testing)
+ *      read as vague. Any -ing verb after "for" names an activity; that is the structure.
+ * Same lesson as the exfil rewrite: enumerate the SHAPE, not the vocabulary.
+ */
+const TRIGGER_CUES_EXTRA = /\bwhen(?:ever)?\s*[:—–-]|\btriggers?\b\s*[:—–-]|\bfor\s+\w+ing\b/i
+
+const TRIGGER_CUES =/\buse\s+(?:this\s+|it\s+)?(?:skill\s+)?(?:when|whenever|for|to|if|during|while|on|with|after|before)\b|\bwhen(?:ever)?\s+(?:you|the\s+user|a\b|an\b|the\b|asked|reviewing|writing|generating|creating|working|running|editing|processing|handling|dealing|building|debugging)\b|\btrigger\w*\s+(?:on|when|whenever|if|for)\b|\b(?:invoked?|activated?|called?|triggered?|used?|runs?)\s+(?:when|whenever|during|for|on|if|to|before|after|while)\b|\bfor\s+(?:reviewing|writing|generating|analy[sz]ing|debugging|creating|building|converting|formatting|extracting|parsing|validating|summari[sz]ing|deploying|testing|refactoring|editing|processing|handling)\b|用于|用来|适用于|使用场景|当[^，。！？\n]{1,40}?(?:时|时候)|[^，。！？\n]{1,24}?时使用|在[^，。！？\n]{1,40}?时|需要[^，。！？\n]{1,24}?时/i
 // A description that OPENS with a concrete action verb ("Converts Markdown tables into
 // CSV", "Formats Python with black") already states its WHAT/WHEN — not vague even without
 // a literal "when" clause, so it is not docked the WHEN penalty.
@@ -902,7 +926,15 @@ function parseFrontmatter(md: string) {
       const kv = raw.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/)
       if (kv) {
         lastKey = kv[1].toLowerCase()
-        fm[lastKey] = kv[2].trim().replace(/^["']|["']$/g, '')
+        // A YAML BLOCK SCALAR header (`description: |-`, `>`, `|+`, `>-`) carries no text
+        // of its own — the value is the indented block that follows, which the
+        // continuation branch below folds in. Keeping the indicator would prefix the
+        // real value with "|- ", which then pollutes description length, the trigger-cue
+        // match, and conflictScan's trigger tokens. Anthropic's own claude-api skill uses
+        // this form, so it is not an edge case.
+        fm[lastKey] = /^[|>][+-]?\d*$/.test(kv[2].trim())
+          ? ''
+          : kv[2].trim().replace(/^["']|["']$/g, '')
       } else if (lastKey && /^\s+\S/.test(raw)) {
         // YAML folded/continuation line — belongs to the previous key
         fm[lastKey] = `${fm[lastKey]} ${raw.trim()}`.trim()
@@ -1025,7 +1057,7 @@ export function analyzeSkill(mdRaw: string, opts?: { bundleText?: string; bundle
     // "Says WHEN" = an explicit trigger cue (any language) OR a concrete action-verb opener
     // ("Converts X into Y" already states its purpose). Skip the penalty in either case —
     // the goal is a concrete trigger, not one exact English phrasing.
-    if (!TRIGGER_CUES.test(description) && !CONCRETE_WHAT.test(description)) {
+    if (!TRIGGER_CUES.test(description) && !TRIGGER_CUES_EXTRA.test(description) && !CONCRETE_WHAT.test(description)) {
       trigger -= 25
       findings.push({ severity: 'medium', category: 'trigger', title: 'Description doesn’t say WHEN to use it', detail: 'A good description names the trigger (e.g. "when reviewing a PR"). Without it the skill mis-fires or never fires.' })
     }
@@ -1136,8 +1168,25 @@ export function analyzeSkill(mdRaw: string, opts?: { bundleText?: string; bundle
    * `loadable` floor in gradeFromScore).
    */
   let tokenScore = clamp(200 - 18 * Math.log(Math.max(1, tokens.total)))
-  if (tokens.total > 1200) {
-    findings.push({ severity: 'medium', category: 'bloat', title: 'Bloated: high token cost', detail: `~${tokens.total.toLocaleString()} tokens on every single call. Compress instructions and trim examples.` })
+  // The FINDING is calibrated to the published spec, not to a hand-picked number. The
+  // Agent Skills spec states the budget outright: "Instructions (< 5000 tokens
+  // recommended): The full SKILL.md body is loaded when the skill is activated" and
+  // "Keep your main SKILL.md under 500 lines." Those are the two authoritative axes, and
+  // they are about the BODY (what activation loads), not name+description.
+  //
+  // This previously fired at an absolute `tokens.total > 1200` — 4.2x stricter than the
+  // spec — which flagged 12 of Anthropic's 17 official skills (71%), including the
+  // official median (frontend-design, 2,062 tokens, 55 lines: 41% of the token budget and
+  // 11% of the line budget). A rule that fires on the majority of the reference
+  // implementation is measuring size, not a defect. It also contradicted the comment
+  // directly above it, which had already moved the SCORE off absolute cliffs and left the
+  // finding behind. The score curve is unchanged; only the assertion is.
+  const bodyLines = body.split('\n').length
+  if (tokens.body > SPEC_BODY_TOKENS) {
+    findings.push({ severity: 'medium', category: 'bloat', title: 'Over the spec’s body budget', detail: `~${tokens.body.toLocaleString()} body tokens — the Agent Skills spec recommends under ${SPEC_BODY_TOKENS.toLocaleString()}. Everything here loads the moment the skill activates; move detail into references/ so it loads only when needed.` })
+  }
+  if (bodyLines > SPEC_BODY_LINES) {
+    findings.push({ severity: 'medium', category: 'bloat', title: 'Over the spec’s line budget', detail: `${bodyLines.toLocaleString()} lines — the spec says keep SKILL.md under ${SPEC_BODY_LINES}. Split detailed reference material into separate files.` })
   }
   // Count duplicate PROSE lines only. De-duping is a free token win — but the optimizer
   // (dedupeProse) refuses to touch code fences (code = behavior), so counting duplicates
@@ -1173,11 +1222,16 @@ export function analyzeSkill(mdRaw: string, opts?: { bundleText?: string; bundle
   if (tokens.total > 2500 && h2count >= 4 && !usesRefs) {
     const deferrable = Math.max(0, tokens.total - 500) // a lean core ≈ 500 tokens
     const pct = Math.round((deferrable / tokens.total) * 100)
+    // Severity tracks whether the skill is actually OVER the published budget. Within
+    // spec, a 4-section monolith is an OPPORTUNITY (the spec merely says "consider
+    // splitting longer content"), so asserting a medium defect over-claims. Over budget,
+    // progressive disclosure is the spec's own stated remedy — that earns medium.
+    const overSpec = tokens.body > SPEC_BODY_TOKENS || body.split('\n').length > SPEC_BODY_LINES
     findings.push({
-      severity: 'medium',
+      severity: overSpec ? 'medium' : 'low',
       category: 'bloat',
-      title: 'Monolithic — should use progressive disclosure',
-      detail: `All ~${tokens.total.toLocaleString()} tokens load on EVERY trigger. The lean pattern is a short SKILL.md that points to detail in \`references/\`, loaded on demand — move your ${h2count} detail sections out to cut the per-trigger cost ~${pct}%.`,
+      title: overSpec ? 'Monolithic — should use progressive disclosure' : 'Could defer detail to references/',
+      detail: `All ~${tokens.total.toLocaleString()} tokens load on EVERY trigger. The lean pattern is a short SKILL.md that points to detail in \`references/\`, loaded on demand — moving your ${h2count} detail sections out would cut the per-trigger cost ~${pct}%.${overSpec ? '' : ' Within the spec’s budget today, so this is an optimization, not a defect.'}`,
     })
   }
   const tokenNote = tokens.total < 300 ? 'Lean' : tokens.total < 900 ? 'Moderate' : 'Large — compress'
