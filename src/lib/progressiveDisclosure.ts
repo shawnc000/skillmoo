@@ -13,7 +13,7 @@
  * exists in the union (SKILL.md ∪ references), the re-graded lean skill is leaner and
  * never worse (grade/gate/risk), or we don't apply it. Pure — no I/O, no model, no egress.
  */
-import { analyzeSkill, estimateTokens, type SkillAnalysis } from './analyzeSkill'
+import { analyzeSkill, estimateTokens, SPEC_BODY_TOKENS, SPEC_BODY_LINES, type SkillAnalysis } from './analyzeSkill'
 
 export interface SplitFile { path: string; content: string }
 export interface SplitResult {
@@ -83,18 +83,38 @@ export function splitProgressive(md: string, opts?: { bundleText?: string; bundl
 
   // Guardrails: only a genuinely bloated, multi-section skill that doesn't already defer.
   if (/(?:references?|scripts?|assets?)\//i.test(norm)) return notApplied('already uses references/ — progressive disclosure is in place')
-  if (tokensBefore < 700) return notApplied('already lean — nothing worth deferring')
+  // WHEN a split is warranted is the spec's call, not ours. The spec says the whole body
+  // loads on activation and to "consider splitting LONGER SKILL.md content into referenced
+  // files", with the budget at <5,000 tokens / <500 lines. An internal 700-token trigger
+  // restructured skills that were nowhere near it: across Anthropic's own 17 official
+  // skills this fired on 6, and ALL SIX were inside the budget — one at 14% of it. Moving
+  // a 695-token skill's instructions into a second file is not an optimization, it is a
+  // second file. Deferring also is not free: the agent re-reads the content the moment it
+  // needs it, paying the same tokens plus a round trip, so it only pays off for material
+  // that genuinely is not needed most of the time.
+  const bodyLines = body.split('\n').length
+  if (tokensBefore <= SPEC_BODY_TOKENS && bodyLines <= SPEC_BODY_LINES)
+    return notApplied(`inside the spec budget (${tokensBefore} of ${SPEC_BODY_TOKENS} tokens, ${bodyLines} of ${SPEC_BODY_LINES} lines) — splitting would move instructions the agent would just read back`)
   const { intro, sections } = splitSections(body)
   if (sections.length < 3) return notApplied('not enough distinct sections to split safely')
 
-  // Move the largest sections until the SKILL.md is lean, always keeping the intro and at
-  // least the single smallest section inline so the operational core stays in SKILL.md.
+  // Move only as much as it takes to get back INSIDE the budget, and take it from the END
+  // first. Two deliberate choices:
+  //   - Target the spec budget, not a stub. The old target was 500 tokens — 10x below the
+  //     spec — so a skill went from "slightly over" to "a pointer", which is not the same
+  //     fix. We aim comfortably under budget and stop.
+  //   - Prefer TRAILING sections. The old rule kept the SMALLEST section inline and moved
+  //     the LARGEST, which sorts by size rather than importance: on frontend-design that
+  //     kept a short framing paragraph and deferred "Design principles" and "Process" —
+  //     the substance. Documents conventionally put overview and procedure first and
+  //     reference detail last, so position is a better structural proxy for "deferrable"
+  //     than length, and it needs no vocabulary list to maintain.
   const sized = sections.map((s, i) => ({ ...s, i, tok: estimateTokens(s.text) }))
-  const keepInline = [...sized].sort((a, b) => a.tok - b.tok)[0]
-  const LEAN_TARGET = 500
+  const LEAN_TARGET = Math.floor(SPEC_BODY_TOKENS * 0.7)
   const moved: typeof sized = []
   let running = tokensBefore
-  for (const s of [...sized].filter((s) => s.i !== keepInline.i).sort((a, b) => b.tok - a.tok)) {
+  // never strip the first section: with the intro it is the operational core
+  for (const s of [...sized].filter((s) => s.i > 0).sort((a, b) => b.i - a.i)) {
     if (running <= LEAN_TARGET) break
     moved.push(s)
     running -= s.tok
