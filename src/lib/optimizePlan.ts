@@ -120,7 +120,23 @@ export function optimizePlan(a: SkillAnalysis, o: OptimizeResult, split?: SplitR
   // ARRIVED: the skill sits at its honest ceiling, so there is nothing left worth
   // doing. Saying "还能怎么提升" here would be inventing homework — the whole reason
   // one optimization never felt like it landed.
-  const ceiling = achievableCeiling(a)
+  // MEASURED, not predicted. We are holding the actual optimized artifact, so the ceiling
+  // is whatever THAT file really grades — no estimate can then over-promise. The estimating
+  // path (achievableCeiling) stays for detection-time preview, where no artifact exists yet,
+  // but it must never be the number we show next to a delivered result: predicting
+  // "A (97) after one click" and then handing back B is the single fastest way to lose a
+  // reader who came here because we promised not to invent numbers.
+  const delivered = analyzeSkill(canSplit ? split!.skillMd : o.optimized)
+  const est = achievableCeiling(a)
+  const ceiling: Ceiling = {
+    grade: delivered.overall.grade,
+    score: delivered.overall.score,
+    clean: delivered.overall.grade === 'A',
+    // Keep the estimator's explanations — they name WHY an axis is stuck (a real threat, a
+    // dangling reference, a description we refuse to rewrite), which the artifact alone
+    // cannot tell you.
+    blockedBy: est.blockedBy,
+  }
   const atCeiling = GRADE_RANK.indexOf(grade) <= GRADE_RANK.indexOf(ceiling.grade) && fixes.length === 0
 
   return {
@@ -136,7 +152,11 @@ export function optimizePlan(a: SkillAnalysis, o: OptimizeResult, split?: SplitR
     atCeiling,
     tokensBefore: o.tokensBefore,
     gradeBefore: o.gradeBefore,
-    gradeAfter: o.gradeAfter,
+    // Same rule as tokensAfter above, applied to the GRADE: it must describe the file we
+    // actually ship. Reporting the rule-based grade while shipping the split's file made
+    // the card contradict itself in the other direction — a card can advertise the split's
+    // ceiling and then print the un-split grade beside it.
+    gradeAfter: delivered.overall.grade,
     changes: o.changes,
     resolved: o.resolved,
     fixes,
@@ -196,9 +216,21 @@ export function achievableCeiling(a: SkillAnalysis): Ceiling {
   if (dangling)
     blockedBy.push({ axis: 'structure', reason: 'It points at a bundled file that wasn’t included, and we can’t invent a file we never got. Ship the file, then re-run.' })
 
+  // The DESCRIPTION is never rewritten on this path. optimizeSkill preserves name and
+  // description by design — the description decides WHEN the skill fires, so editing it
+  // silently changes behaviour, and the verify-or-reject gate treats that as a regression.
+  // So the trigger axis is INVARIANT here, and promising 100 promised a jump this path
+  // cannot deliver: with trigger weighted 0.45, a skill carrying a trigger defect was
+  // advertised as "A (97) after one click" and then correctly delivered B, because the
+  // optimizer had honoured its own rule and left the description alone. The ceiling now
+  // promises only what the deterministic path can actually produce.
+  const triggerDefect = a.findings.some((f) => f.category === 'trigger')
+  if (triggerDefect)
+    blockedBy.push({ axis: 'trigger', reason: 'Its description is what needs work, and we don’t rewrite that automatically — the description decides WHEN your skill fires, so changing it changes behaviour. That edit is yours to make (or the model-assisted tier’s, with your review).' })
+
   const best: Record<AxisKey, number> = {
     structure: dangling ? ax.structure : 100,
-    trigger: 100,
+    trigger: ax.trigger,
     // Token cost is reliably recoverable (compression + progressive disclosure), but we
     // don't promise a perfect 100 — real content still has to live somewhere.
     tokens: Math.max(ax.tokens, 90),

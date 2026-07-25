@@ -22,11 +22,27 @@ export type RiskLevel = 'low' | 'medium' | 'high' | 'critical'
 export type Gate = 'pass' | 'review' | 'block'
 export type AxisKey = 'structure' | 'trigger' | 'tokens' | 'risk'
 
+/**
+ * Where a finding actually is. A verdict a stranger cannot re-derive is an opinion;
+ * a verdict that names the line and quotes the text is evidence. This is what lifts
+ * the grade vector's `evidence` state from 'partial' to 'located'.
+ *
+ * `line` is 1-indexed against the ORIGINAL file (not the normalized scan text), so it
+ * matches what the reader sees in their editor. `snippet` is the matched text, bounded
+ * and single-line so a finding can never dump the file back at you.
+ */
+export interface FindingEvidence {
+  line: number
+  snippet: string
+}
+
 export interface Finding {
   severity: Severity
   category: string
   title: string
   detail: string
+  /** Present for findings located at a specific place; absent for whole-file quality verdicts. */
+  evidence?: FindingEvidence
 }
 
 export type FindingKind = 'threat' | 'capability' | 'quality'
@@ -792,8 +808,8 @@ const RISK_RULES: Rule[] = [
  *   "Keep your main SKILL.md under 500 lines."
  * — https://agentskills.io/specification (Progressive disclosure)
  */
-const SPEC_BODY_TOKENS = 5000
-const SPEC_BODY_LINES = 500
+export const SPEC_BODY_TOKENS = 5000
+export const SPEC_BODY_LINES = 500
 
 /**
  * A description "says WHEN" if it names a trigger — and the test has to be STRUCTURAL,
@@ -973,6 +989,40 @@ const TOOL_FOOTPRINT: Record<string, RegExp> = {
   websearch: /\bsearch\b|\bweb\s*search\b|\blook\s*up\b|\bgoogle\b|\bfind\s+(?:online|on\s+the\s+web)\b/i,
 }
 const POWERFUL_TOOLS = new Set(['bash', 'write', 'edit', 'webfetch', 'websearch'])
+
+/**
+ * Turn a regex hit into a citation the reader can check.
+ *
+ * The rules run against NORMALIZED text (homoglyphs folded, zero-width chars stripped,
+ * Unicode-tag payloads decoded), so a match offset is not an offset into the file the
+ * user is looking at. We therefore locate the match in the ORIGINAL first, so the line
+ * number matches their editor; only when normalization changed the bytes do we fall back
+ * to the scan's own line numbering, and we say so rather than quietly citing a line that
+ * would not contain the text.
+ */
+/**
+ * Cite a finding that a PREDICATE produced (a dataflow verdict, not a single regex hit)
+ * by locating the characteristic token in the original file. The predicate decides IS
+ * this a defect; this decides WHERE the reader should look — so a critical verdict is
+ * never delivered without a place to check it.
+ */
+function locateFirst(original: string, re: RegExp): FindingEvidence | undefined {
+  const probe = new RegExp(re.source, re.flags.replace(/[gy]/g, ''))
+  const m = probe.exec(original)
+  if (!m) return undefined
+  const clean = m[0].replace(/\s+/g, ' ').trim()
+  return { line: original.slice(0, m.index).split('\n').length, snippet: clean.length > 160 ? `${clean.slice(0, 157)}…` : clean }
+}
+
+function locate(original: string, scan: string, index: number, matched: string): FindingEvidence | undefined {
+  const clean = matched.replace(/\s+/g, ' ').trim()
+  if (!clean) return undefined
+  const at = original.indexOf(matched)
+  const exact = at >= 0
+  const line = (exact ? original.slice(0, at) : scan.slice(0, index)).split('\n').length
+  const snippet = clean.length > 160 ? `${clean.slice(0, 157)}…` : clean
+  return { line, snippet: exact ? snippet : `(decoded) ${snippet}` }
+}
 
 export function analyzeSkill(mdRaw: string, opts?: { bundleText?: string; bundleFiles?: string[] }): SkillAnalysis {
   // Normalize line endings FIRST. A CRLF (`\r\n`) file — ubiquitous on Windows and
@@ -1362,6 +1412,7 @@ export function analyzeSkill(mdRaw: string, opts?: { bundleText?: string; bundle
       detail: negated
         ? 'Appears inside a prohibition/warning ("never …"), not as an instruction to run. Flagged for awareness only.'
         : rule.detail,
+      evidence: locate(secInput, scan, m.index, m[0]),
     })
   }
   // Invisible-instruction smuggling: readable ASCII hidden in Unicode Tag chars
@@ -1441,6 +1492,9 @@ export function analyzeSkill(mdRaw: string, opts?: { bundleText?: string; bundle
       category: 'exfil',
       title: 'Dumps the environment to the network — exfiltration chain',
       detail: 'Reads the WHOLE environment (printenv / env / process.env harvested) or a credential value and pipes or posts it to the network. A notification posts a message; sending secrets/every variable is credential theft, whatever the destination (including a Slack/Discord webhook).',
+      // The verdict comes from dataflow, so cite where the environment read is — the
+      // reader can then follow the value to the sink themselves.
+      evidence: locateFirst(secInput, WHOLE_ENV),
     })
   }
 

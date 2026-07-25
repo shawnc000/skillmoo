@@ -107,9 +107,21 @@ export interface PortfolioPlan {
     narrow: number
     drop: number
     conflicts: number
+    /**
+     * FULL body size of every skill, summed — what you'd pay if every one of them
+     * activated. This is NOT the standing cost: a body is only loaded when its skill
+     * fires. See alwaysOnNow for the number that is billed every turn.
+     */
     tokensNow: number
     /** tokens after applying the safe one-click optimize + dropping/merging. */
     tokensAfter: number
+    /**
+     * The STANDING cost: name + description for every installed skill, which the harness
+     * puts in the system prompt and re-sends every turn whether or not anything fires.
+     * Reporting tokensNow as if it were this overstated the always-on bill ~14x on a real
+     * 20-skill portfolio (24,823 vs 1,730), because it charged every body up front.
+     */
+    alwaysOnNow: number
     goal?: string
   }
   /** Plain-language honesty note about what the ranking is (and isn't) based on. */
@@ -329,6 +341,7 @@ export function composePortfolio(skills: PortfolioSkill[], goal?: string): Portf
       conflicts,
       tokensNow: rows.reduce((s, r) => s + r.a.tokens.total, 0),
       tokensAfter,
+      alwaysOnNow: rows.reduce((s, r) => s + r.a.tokens.description + 8, 0),
       goal: goal || undefined,
     },
     basis: goal
