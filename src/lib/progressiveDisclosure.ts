@@ -32,6 +32,13 @@ export interface SplitResult {
   verified: boolean
   /** why it was not applied (or the safety reason it reverted) */
   reason?: string
+  /**
+   * The EXACT bundle `gradeAfter` was measured against — the caller's bundle plus the
+   * reference file this split creates. Exposed because a downstream re-analysis that
+   * rebuilds this basis by hand will get it subtly wrong, and a grade measured on a
+   * different basis is not comparable to `gradeBefore`. See analyzeSkill's `evidence`.
+   */
+  bundle?: { bundleText?: string; bundleFiles?: string[] }
 }
 
 const GRADE_RANK: Record<string, number> = { A: 0, B: 1, C: 2, D: 3, F: 4 }
@@ -74,7 +81,7 @@ export function splitProgressive(md: string, opts?: { bundleText?: string; bundl
   const norm = (md ?? '').replace(/\r\n/g, '\n')
   const before = analyzeSkill(norm, opts)
   const tokensBefore = before.tokens.total
-  const notApplied = (reason: string): SplitResult => ({ applied: false, skillMd: norm, files: [], movedSections: [], tokensBefore, tokensAfter: tokensBefore, savedPct: 0, gradeBefore: before.overall.grade, gradeAfter: before.overall.grade, verified: false, reason })
+  const notApplied = (reason: string): SplitResult => ({ applied: false, skillMd: norm, files: [], movedSections: [], tokensBefore, tokensAfter: tokensBefore, savedPct: 0, gradeBefore: before.overall.grade, gradeAfter: before.overall.grade, verified: false, reason, bundle: opts })
 
   const fmM = norm.match(/^﻿?\s*---\s*\n[\s\S]*?\n---\s*\n?/)
   const fmBlock = fmM ? fmM[0] : ''
@@ -142,10 +149,11 @@ export function splitProgressive(md: string, opts?: { bundleText?: string; bundl
   const uc = codeBlocks(union)
   if (oc.length !== uc.length || oc.some((b) => !union.includes(b))) return notApplied('a code block would be lost in the split')
 
-  const after = analyzeSkill(skillMd, {
+  const splitBundle = {
     bundleFiles: [...(opts?.bundleFiles ?? []), refPath],
     bundleText: `${opts?.bundleText ?? ''}\n${refContent}`,
-  })
+  }
+  const after = analyzeSkill(skillMd, splitBundle)
   const tokensAfter = after.tokens.total
   const reason = verifySplit(before, after, tokensBefore, tokensAfter)
   if (reason) return notApplied(reason)
@@ -153,5 +161,5 @@ export function splitProgressive(md: string, opts?: { bundleText?: string; bundl
   const savedPct = tokensBefore ? Math.max(0, Math.round((1 - tokensAfter / tokensBefore) * 100)) : 0
   if (savedPct < 15) return notApplied('the token saving would be too small to be worth restructuring')
 
-  return { applied: true, skillMd, files, movedSections: movedOrdered.map((s) => s.heading), tokensBefore, tokensAfter, savedPct, gradeBefore: before.overall.grade, gradeAfter: after.overall.grade, verified: true }
+  return { applied: true, skillMd, files, movedSections: movedOrdered.map((s) => s.heading), tokensBefore, tokensAfter, savedPct, gradeBefore: before.overall.grade, gradeAfter: after.overall.grade, verified: true, bundle: splitBundle }
 }

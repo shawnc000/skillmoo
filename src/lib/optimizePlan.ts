@@ -10,10 +10,14 @@
  * CAPABILITIES (reads a key, calls the network) that are disclosure, not defects to fix.
  */
 import {
-  analyzeSkill, findingKind, gradeFromScore, overallFrom, AXIS_WEIGHTS, SEV_WEIGHT, type SkillAnalysis,
+  analyzeSkill, findingKind, gradeCost, gradeFromScore, overallFrom, AXIS_WEIGHTS, SEV_WEIGHT,
+  SPEC_BODY_TOKENS, TOKEN_CURVE, type SkillAnalysis,
 } from './analyzeSkill'
 import { optimizeSkill, type OptimizeResult } from './optimizeSkill'
 import { splitProgressive, type SplitResult } from './progressiveDisclosure'
+// The ceiling may promise no more compression than the optimizer is actually allowed to ask
+// the model for — same constant, so the promise and the ask cannot drift apart.
+import { PRO_TOKEN_BUDGET } from './optimizePro'
 
 export type FixTier = 'pro' | 'manual'
 export interface PlanFix { text: string; tier: FixTier }
@@ -57,6 +61,12 @@ export interface OptimizePlan {
 // named the wrong limiting axis). Risk is 1 because it is SUBTRACTIVE in
 // `overallFrom`: one risk point costs one full point of the overall score.
 const AXIS_W: Record<AxisKey, number> = { ...AXIS_WEIGHTS, risk: 1 }
+
+// Evidence strength, strongest first. 'full' = the whole bundle was analysed; 'partial' =
+// only SKILL.md was seen, so anything hiding in a bundled script is invisible. Comparing a
+// 'partial' re-grade against a 'full' baseline is what manufactured a "D → A" out of a
+// one-token edit — the second measurement simply could not see the risk the first one did.
+const EVIDENCE_RANK: Record<string, number> = { full: 0, partial: 1, empty: 2 }
 // An axis at/above the A cutoff isn't meaningfully holding the grade back.
 const AXIS_OK = 85
 // Best → worst, so "have we reached the ceiling?" is an index comparison.
@@ -65,7 +75,14 @@ const GRADE_RANK = ['A', 'B', 'C', 'D', 'F']
 const tierFor = (s: string): FixTier =>
   /allowed-tools|Add Bash|Ship the missing|references|progressive disclosure|move the detail|split|heading|frontmatter/i.test(s) ? 'manual' : 'pro'
 
-export function optimizePlan(a: SkillAnalysis, o: OptimizeResult, split?: SplitResult): OptimizePlan {
+export function optimizePlan(
+  a: SkillAnalysis,
+  o: OptimizeResult,
+  split?: SplitResult,
+  /** The bundle `a` was measured against. Required for the delivered artifact to be
+   *  re-graded on the SAME evidence; omitting it is caught by `comparable` below. */
+  opts?: { bundleText?: string; bundleFiles?: string[] },
+): OptimizePlan {
   const ax = Object.fromEntries(a.axes.map((x) => [x.key, x.score])) as Record<AxisKey, number>
   const grade = a.overall.grade
   // A deterministic progressive-disclosure restructure is a REAL deliverable result
@@ -126,12 +143,29 @@ export function optimizePlan(a: SkillAnalysis, o: OptimizeResult, split?: SplitR
   // but it must never be the number we show next to a delivered result: predicting
   // "A (97) after one click" and then handing back B is the single fastest way to lose a
   // reader who came here because we promised not to invent numbers.
-  const delivered = analyzeSkill(canSplit ? split!.skillMd : o.optimized)
+  // MEASURED ON THE SAME EVIDENCE AS THE BASELINE. This dropped `opts` until 2026-07-27,
+  // and that one omission produced the worst class of bug this product can have: a skill
+  // whose risk lives in a BUNDLED SCRIPT (child_process, an API key) graded D on the
+  // detection card, then re-graded A here — because re-analysing without the bundle makes
+  // every bundled-script finding, and the whole reference-integrity check, silently
+  // disappear. The card then printed "D → A" for a rewrite that saved one token. The
+  // engine had already flagged it: `evidence` fell from 'full' to 'partial', which is
+  // exactly the "we saw less this time" signal — nothing was comparing it. A grade is only
+  // ever comparable to another grade measured on the same evidence.
+  const deliveredBundle = canSplit ? split!.bundle : opts
+  const delivered = analyzeSkill(canSplit ? split!.skillMd : o.optimized, deliveredBundle)
+  // Belt AND braces. Threading the bundle above fixes the bug; this makes forgetting it
+  // impossible to profit from. If the re-analysis somehow saw LESS than the baseline did,
+  // any apparent improvement is an artifact of the missing evidence, not of the rewrite —
+  // so we claim nothing and report the baseline grade unchanged. Silence beats a lie, and
+  // eval:optimize-plan asserts the real path never lands here.
+  const comparable = EVIDENCE_RANK[delivered.vector.evidence] <= EVIDENCE_RANK[a.vector.evidence]
+  const measured = comparable ? delivered.overall : a.overall
   const est = achievableCeiling(a)
   const ceiling: Ceiling = {
-    grade: delivered.overall.grade,
-    score: delivered.overall.score,
-    clean: delivered.overall.grade === 'A',
+    grade: measured.grade,
+    score: measured.score,
+    clean: measured.grade === 'A',
     // Keep the estimator's explanations — they name WHY an axis is stuck (a real threat, a
     // dangling reference, a description we refuse to rewrite), which the artifact alone
     // cannot tell you.
@@ -156,7 +190,7 @@ export function optimizePlan(a: SkillAnalysis, o: OptimizeResult, split?: SplitR
     // actually ship. Reporting the rule-based grade while shipping the split's file made
     // the card contradict itself in the other direction — a card can advertise the split's
     // ceiling and then print the un-split grade beside it.
-    gradeAfter: delivered.overall.grade,
+    gradeAfter: measured.grade,
     changes: o.changes,
     resolved: o.resolved,
     fixes,
@@ -211,6 +245,21 @@ export function achievableCeiling(a: SkillAnalysis): Ceiling {
   if (threatPenalty > 0)
     blockedBy.push({ axis: 'risk', reason: 'It contains a real threat signal. We will not rewrite malware into a better grade — this one is a human decision.' })
 
+  // …and neither is a CAPABILITY. This was the second half of the 2026-07-27 report: the
+  // ceiling reset risk to a clean 100, silently assuming the 30-point charge on a HIGH
+  // capability (`child_process`, key material) would be optimized away. It cannot be. A
+  // rewrite must preserve behaviour — optimizePro rejects any candidate that drops a code
+  // block, and the rule-based path never touches code — so the capability, and its charge,
+  // survive every optimize by design. Promising otherwise advertised "A (90)" on a skill
+  // whose honest ceiling was two grades lower. (Ordinary MEDIUM/LOW capability already
+  // costs 0 via gradeCost, so this only ever holds back a genuinely unusual one.)
+  const capabilityPenalty = a.findings
+    .filter((f) => findingKind(f) === 'capability')
+    .reduce((s, f) => s + gradeCost(f), 0)
+  if (capabilityPenalty > 0)
+    blockedBy.push({ axis: 'risk', reason: 'It carries a powerful capability (running code, key material). A rewrite has to preserve what the skill does, so that stays — and so does its weight on the grade. This is disclosure, not a defect to fix.' })
+  const heldRisk = threatPenalty + capabilityPenalty
+
   // A dangling reference can't be fixed by editing text: the file isn't ours to write.
   const dangling = a.findings.some((f) => /isn’t present|isn't present/i.test(f.title))
   if (dangling)
@@ -228,13 +277,25 @@ export function achievableCeiling(a: SkillAnalysis): Ceiling {
   if (triggerDefect)
     blockedBy.push({ axis: 'trigger', reason: 'Its description is what needs work, and we don’t rewrite that automatically — the description decides WHEN your skill fires, so changing it changes behaviour. That edit is yours to make (or the model-assisted tier’s, with your review).' })
 
+  // Token recovery is promised only as far as the two levers that actually exist:
+  //   • the model rewrite is given a HARD budget of 75% of the original (optimizePro), and
+  //   • progressive disclosure runs ONLY when the body is over the spec budget.
+  // The old line asserted a flat floor of 90, which on a 1,800-token skill needs a ~75% cut
+  // down to ~450 tokens — far past either lever. That single number is what turned a D into
+  // a promised "A (90)". Modelling the levers costs nothing and cannot outrun them.
+  const overBudget = a.tokens.body > SPEC_BODY_TOKENS
+  const bestTokens = overBudget
+    ? Math.min(SPEC_BODY_TOKENS * 0.7, a.tokens.total * PRO_TOKEN_BUDGET)
+    : a.tokens.total * PRO_TOKEN_BUDGET
+  const tokensCeil = Math.max(0, Math.min(100, Math.round(
+    TOKEN_CURVE.intercept - TOKEN_CURVE.perDoubling * Math.log(Math.max(1, bestTokens)),
+  )))
+
   const best: Record<AxisKey, number> = {
     structure: dangling ? ax.structure : 100,
     trigger: ax.trigger,
-    // Token cost is reliably recoverable (compression + progressive disclosure), but we
-    // don't promise a perfect 100 — real content still has to live somewhere.
-    tokens: Math.max(ax.tokens, 90),
-    risk: Math.max(0, 100 - threatPenalty),
+    tokens: Math.max(ax.tokens, tokensCeil),
+    risk: Math.max(0, 100 - heldRisk),
   }
   const score = overallFrom(best)
   const grade = gradeFromScore(score, a.findings.some((f) => f.severity === 'critical'))
@@ -258,5 +319,5 @@ export function optimizeNow(md: string, opts?: { bundleText?: string; bundleFile
   const a = analyzeSkill(md, opts)
   const o = optimizeSkill(md, opts)
   const split = splitProgressive(md, opts)
-  return optimizePlan(a, o, split)
+  return optimizePlan(a, o, split, opts)
 }

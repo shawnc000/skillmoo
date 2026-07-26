@@ -23,6 +23,22 @@ project aims to follow [Semantic Versioning](https://semver.org/).
   first-party source fails; an original one whose justification names no measurement fails;
   and any exported scoring constant that is neither declared nor exempted by name fails.
 
+### Fixed
+
+- **The optimizer no longer announces a grade lift it did not earn.** A grade is only ever
+  comparable to another grade measured on the *same evidence* — and the optimize chain broke
+  that in three places. `optimizePlan` re-graded the delivered artifact without the bundle,
+  so for a skill whose risk lives in a **bundled script** every finding (and the whole
+  reference-integrity check) silently vanished: a real report had a D-graded skill announced
+  as "D → A" after an edit that saved **one token**. `optimizePro` had no bundle parameter at
+  all, so its before/after were both blind. And `achievableCeiling` — the predicted bar —
+  assumed the 30-point charge on a **HIGH capability** would be optimized away (a rewrite must
+  preserve behaviour, so it cannot be) and asserted a flat token floor that needed a ~75% cut
+  the model is never even asked for. All three now measure on one basis; capability charges
+  are held and named as what pins the grade; promised compression is bounded by the exported
+  `PRO_TOKEN_BUDGET` the model actually receives. If a re-analysis ever sees *less* than the
+  baseline, the plan reports no change rather than a phantom lift.
+
 ### Changed
 
 - **`description` is now checked against the spec's 1024-character cap.** The rule was

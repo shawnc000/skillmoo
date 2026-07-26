@@ -199,9 +199,21 @@ export function extractSkillMd(raw: string): string {
  * Run the Pro optimize. `chat` is injected; if it throws or the rewrite fails any
  * honesty check, we return the deterministic rule-based result (never worse).
  */
-export async function optimizePro(md: string, chat: ChatFn): Promise<ProResult> {
-  const rule = optimizeSkill(md)             // always-safe deterministic baseline
-  const before = analyzeSkill(md)
+export async function optimizePro(
+  md: string,
+  chat: ChatFn,
+  /**
+   * The skill's bundle, when the caller has it. EVERY analysis in this module must run on
+   * the SAME evidence, or the ledger compares two different measurements: a rewrite
+   * re-graded without the bundle loses every finding that lives in a bundled script, and
+   * the resulting "grade went up" is an artifact of blindness, not an improvement. The web
+   * server never receives a bundle (only `md` is posted), so it passes nothing and both
+   * sides stay 'partial'; the CLI has the real files and passes them.
+   */
+  opts?: { bundleText?: string; bundleFiles?: string[] },
+): Promise<ProResult> {
+  const rule = optimizeSkill(md, opts)       // always-safe deterministic baseline
+  const before = analyzeSkill(md, opts)
   const tokensBefore = before.tokens.total
 
   const base: ProResult = {
@@ -222,7 +234,7 @@ export async function optimizePro(md: string, chat: ChatFn): Promise<ProResult> 
   // leaner" and then rejecting it for landing 3% heavier is our failure, not its —
   // it was never told what the bar was. 75% of the original is a target real skills
   // clear comfortably (the corpus median rewrite saves ~30%).
-  const budget = Math.max(120, Math.round(tokensBefore * 0.75))
+  const budget = Math.max(120, Math.round(tokensBefore * PRO_TOKEN_BUDGET))
   const userPrompt = (retryNote: string) =>
     `Optimize this SKILL.md. Output only the rewritten file.\n\n` +
     `TOKEN BUDGET: the original is ~${tokensBefore} tokens. Your rewrite MUST come in at or under ` +
@@ -245,7 +257,7 @@ export async function optimizePro(md: string, chat: ChatFn): Promise<ProResult> 
     } catch (e) {
       return { ...base, rejectionReason: `model call failed (${(e as Error).message.slice(0, 80)}) — used the safe rule-based optimize` }
     }
-    const verdict = verifyRewrite(md, extractSkillMd(reply), before, rule, tokensBefore)
+    const verdict = verifyRewrite(md, extractSkillMd(reply), before, rule, tokensBefore, opts)
     if (verdict.ok) return verdict.result
     lastVerdict = verdict
     lastReject =
@@ -268,6 +280,14 @@ export async function optimizePro(md: string, chat: ChatFn): Promise<ProResult> 
 /** How many times the model may try before we settle for the deterministic result. */
 const MAX_ATTEMPTS = 3
 
+/**
+ * The hard token budget handed to the model: a rewrite MUST come in at or under 75% of the
+ * original. Exported because achievableCeiling promises compression to the user BEFORE this
+ * runs, and a promise larger than the ask is how the bar came to advertise an "A (90)" on a
+ * skill the optimizer could never take past D. One constant, so they cannot drift.
+ */
+export const PRO_TOKEN_BUDGET = 0.75
+
 interface Verdict {
   ok: boolean
   result: ProResult
@@ -282,8 +302,11 @@ function verifyRewrite(
   before: SkillAnalysis,
   rule: OptimizeResult,
   tokensBefore: number,
+  opts?: { bundleText?: string; bundleFiles?: string[] },
 ): Verdict {
-  const after = analyzeSkill(candidate)
+  // Same bundle as `before`. Not optional: this is the comparison that decides whether the
+  // model's rewrite is accepted and what grade we report for it.
+  const after = analyzeSkill(candidate, opts)
   const tokensAfter = after.tokens.total
 
   // ---- the honesty ledger: every check must pass to accept the rewrite ----
