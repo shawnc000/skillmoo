@@ -41,7 +41,8 @@
     "dev": "tsx cli/index.ts",
     "build": "node scripts/build-cli.mjs",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "node scripts/build-cli.mjs"
+    "prepublishOnly": "node scripts/build-cli.mjs",
+    "eval:provenance": "tsx scripts/eval-provenance.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

@@ -6,6 +6,37 @@ project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`src/lib/provenance.ts` — where every grade-deciding number comes from.** 17 constants,
+  each tagged `spec` / `harness` / `standard` / `skillmoo`, and — where borrowed — carrying
+  the first-party URL it was taken from. 12 of 17 (71%) are verbatim from a published
+  authority: the [Agent Skills spec](https://agentskills.io/specification), Claude Code's and
+  Codex's own shipped listing constants, [CVSS v4.0](https://www.first.org/cvss/v4-0/specification-document)
+  severity bands, [OWASP LLM Top 10](https://genai.owasp.org/llm-top-10/) blocking classes,
+  Landis–Koch κ bands, and [OpenSSF Scorecard](https://github.com/ossf/scorecard)'s
+  unknown-is-a-state discipline. The other 5 are labelled as ours, because no vendor
+  publishes a weighting for skill quality and citing someone else's name for a number we
+  chose would be dishonest.
+- **`npm run eval:provenance`** — 209 assertions you can run yourself. Values are imported
+  from the modules that own them, so the registry cannot drift; a borrowed constant without a
+  first-party source fails; an original one whose justification names no measurement fails;
+  and any exported scoring constant that is neither declared nor exempted by name fails.
+
+### Changed
+
+- **`description` is now checked against the spec's 1024-character cap.** The rule was
+  declared a universal-spec MUST in `canon.ts` from the first release and the engine never
+  enforced it. It costs 10 structure points and raises a `medium` finding — never a block.
+  No skill in the rated corpus (0 of 356) exceeds the cap, so no existing grade moves.
+- The conflict Jaccard cutoffs are now **disclosed as uncalibrated**, and structurally barred
+  from affecting a grade or a gate (asserted: `analyzeSkill` may not import `conflictScan`).
+  There is no labelled gold set of "skills that really did steal each other's trigger" — that
+  outcome depends on the model, the phrasing of the request, and the user's own installed set.
+  They are also **not comparable to Cisco skill-scanner's published 0.7**: that is raw-word
+  Jaccard over a whole description, ours runs on stop-worded, stemmed, document-frequency-
+  filtered trigger tokens. Different denominator, not the same quantity.
+
 Tracked in the [roadmap](README.md#roadmap). Planned:
 
 - Non-English (CJK-first) injection / exfiltration lexicon.

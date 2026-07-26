@@ -90,6 +90,23 @@ function triggerTokens(desc: string): Set<string> {
 
 const SEV_ORDER: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3 }
 
+/**
+ * Trigger-overlap cutoffs. SkillMOO-original, and deliberately NOT comparable to the
+ * one public peer: Cisco's skill-scanner fires a single MEDIUM `TRIGGER_OVERLAP_RISK`
+ * at raw-word Jaccard > 0.7 over the whole description
+ * (skill_scanner/core/scanner.py::_check_description_overlap). Ours reads lower because
+ * it runs on a DIFFERENT denominator — stop-worded, stemmed, and document-frequency
+ * filtered down to discriminative trigger tokens, so a pair that scores 0.34 here is
+ * already sharing a third of its *distinctive* surface, not a third of its prose.
+ * Comparing the two numbers directly is a category error; comparing behaviour is not,
+ * and that is what eval:detector pins.
+ *
+ * These never touch a grade or a gate — conflict is advisory by construction (it is a
+ * property of a SET, and we cannot see a stranger's installed set), so a wrong cutoff
+ * costs a reader a look, never a false block.
+ */
+export const JACCARD = { shadow: 0.16, shadowHigh: 0.4, overlap: 0.34, overlapHigh: 0.55 }
+
 export function analyzePortfolio(skills: SkillMeta[]): PortfolioReport {
   const enriched = skills
     // Guard against an undefined description: in-app callers pass a string, but this is
@@ -132,10 +149,10 @@ export function analyzePortfolio(skills: SkillMeta[]): PortfolioReport {
       const jaccard = union > 0 ? shared.length / union : 0
 
       const eitherBroad = A.broad || B.broad
-      if (eitherBroad && (jaccard >= 0.16 || shared.length >= 3)) {
-        conflicts.push({ a: A.name, b: B.name, shared, kind: 'shadow', severity: jaccard >= 0.4 ? 'high' : 'medium' })
-      } else if (jaccard >= 0.34 && shared.length >= 2) {
-        conflicts.push({ a: A.name, b: B.name, shared, kind: 'overlap', severity: jaccard >= 0.55 ? 'high' : 'medium' })
+      if (eitherBroad && (jaccard >= JACCARD.shadow || shared.length >= 3)) {
+        conflicts.push({ a: A.name, b: B.name, shared, kind: 'shadow', severity: jaccard >= JACCARD.shadowHigh ? 'high' : 'medium' })
+      } else if (jaccard >= JACCARD.overlap && shared.length >= 2) {
+        conflicts.push({ a: A.name, b: B.name, shared, kind: 'overlap', severity: jaccard >= JACCARD.overlapHigh ? 'high' : 'medium' })
       }
     }
   }

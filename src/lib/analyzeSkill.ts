@@ -189,7 +189,11 @@ export interface SkillAnalysis {
 
 const clamp = (n: number, lo = 0, hi = 100) => Math.max(lo, Math.min(hi, Math.round(n)))
 
-const GRADE_CUTS: Array<[number, string]> = [[85, 'A'], [72, 'B'], [58, 'C'], [42, 'D']]
+/** Exported so the published methodology page RENDERS these cuts instead of restating
+ *  them in prose (the page used to hardcode "A ≥ 85, B ≥ 72…" — a silent-drift bug of
+ *  exactly the kind eval:methodology exists to catch) and so provenance.ts can declare
+ *  where they came from. */
+export const GRADE_CUTS: Array<[number, string]> = [[85, 'A'], [72, 'B'], [58, 'C'], [42, 'D']]
 
 /**
  * Grade from an overall score. A critical finding is disqualifying → F.
@@ -812,6 +816,28 @@ export const SPEC_BODY_TOKENS = 5000
 export const SPEC_BODY_LINES = 500
 
 /**
+ * The two frontmatter limits in the same spec — hard caps, not recommendations:
+ *   "name … Maximum 64 characters"
+ *   "description … Maximum 1024 characters"
+ * — https://agentskills.io/specification (Frontmatter fields)
+ * SPEC_NAME_CHARS is what the `^[a-z0-9][a-z0-9-]{0,63}$` name check spends its
+ * {0,63} on (1 leading char + 63 = 64); it is named here so provenance.ts can cite
+ * the same authority the regex silently encodes.
+ */
+export const SPEC_NAME_CHARS = 64
+export const SPEC_DESC_CHARS = 1024
+
+/**
+ * Token-efficiency curve: `score = intercept − perDoubling · ln(tokens)`.
+ * SkillMOO-original — no vendor publishes a token-efficiency scale — so the numbers
+ * are justified by calibration, not by authority: they put the corpus median mid-axis
+ * (~2k→63), a lean skill near the top (~500→90) and a very large one low but non-zero
+ * (~18k→23), and were accepted only after grade-κ against the gold set held at 0.809
+ * with no gold entry changing band. Declared as ours in provenance.ts.
+ */
+export const TOKEN_CURVE = { intercept: 200, perDoubling: 18 }
+
+/**
  * A description "says WHEN" if it names a trigger — and the test has to be STRUCTURAL,
  * not a list of blessed phrasings. The enumerated version missed three shapes that the
  * reference implementation actually uses, and each miss was a false "vague trigger" on a
@@ -1077,6 +1103,19 @@ export function analyzeSkill(mdRaw: string, opts?: { bundleText?: string; bundle
   if (!description) {
     structure -= 30
     findings.push({ severity: 'medium', category: 'spec', title: 'Missing description field', detail: 'The description is the ONLY thing the agent uses to decide when to fire this skill; missing it means it never triggers.' })
+  } else if (description.length > SPEC_DESC_CHARS) {
+    // The open spec caps `description` at 1024 characters. canon.ts has declared this a
+    // universal-spec MUST since rubric 2.0 — and the engine never checked it: a rule we
+    // published and did not enforce. (eval:provenance now fails the build on that class
+    // of gap.) It is not a cosmetic cap: over it the harness truncates too, and the tail
+    // of a description is where the "do NOT use when…" clause lives, so what gets cut is
+    // exactly the part that stops the skill mis-firing.
+    structure -= 10
+    findings.push({
+      severity: 'medium', category: 'spec', title: 'Description over the spec limit',
+      detail: `${description.length.toLocaleString()} characters — the Agent Skills spec caps description at ${SPEC_DESC_CHARS.toLocaleString()}. Past the cap harnesses truncate it, and the tail is usually the "when NOT to use this" clause the agent needs most.`,
+      evidence: { line: 1, snippet: `description: ${description.slice(0, 120)}…` },
+    })
   }
   if (body.trim().length < 40) {
     structure -= 15
@@ -1217,7 +1256,7 @@ export function analyzeSkill(mdRaw: string, opts?: { bundleText?: string; bundle
    * and F is reserved for blocked/critical/unloadable — never merely "big" (see the
    * `loadable` floor in gradeFromScore).
    */
-  let tokenScore = clamp(200 - 18 * Math.log(Math.max(1, tokens.total)))
+  let tokenScore = clamp(TOKEN_CURVE.intercept - TOKEN_CURVE.perDoubling * Math.log(Math.max(1, tokens.total)))
   // The FINDING is calibrated to the published spec, not to a hand-picked number. The
   // Agent Skills spec states the budget outright: "Instructions (< 5000 tokens
   // recommended): The full SKILL.md body is loaded when the skill is activated" and
