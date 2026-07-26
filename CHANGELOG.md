@@ -25,6 +25,12 @@ project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Every CLI command now grades on the whole bundle.** `skillmoo report <SKILL.md>` analysed
+  the file alone even when run inside a real skill folder. On a skill whose risk lives in
+  `scripts/` it printed **A 90/100 · 1 finding** where the full bundle grades **D 57/100 ·
+  5 findings** — a 33-point error in the reassuring direction, hiding a HIGH "spawns a
+  process" finding and a dangling reference. `skillmoo scan` was always correct; `report`
+  and `optimize --pro` were not. All four call sites now share one `bundleOptsFor()` helper.
 - **The optimizer no longer announces a grade lift it did not earn.** A grade is only ever
   comparable to another grade measured on the *same evidence* — and the optimize chain broke
   that in three places. `optimizePlan` re-graded the delivered artifact without the bundle,

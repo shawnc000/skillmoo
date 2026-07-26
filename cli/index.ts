@@ -41,6 +41,16 @@ interface Graded {
   reason: string
 }
 
+/** The bundle context for a skill on disk — the SAME evidence `skillmoo scan` grades on.
+ *  Every command must analyse the whole bundle when one exists: a grade measured on
+ *  SKILL.md alone cannot see a payload in scripts/, so `skillmoo report` used to print
+ *  A 90/100 where the full bundle grades D 57/100. Read-only, bounded. */
+function bundleOptsFor(skillPath: string): { bundleText?: string; bundleFiles?: string[] } | undefined {
+  const b = readBundle(skillPath)
+  if (!b.bundle) return undefined
+  return { ...(b.text ? { bundleText: b.text } : {}), bundleFiles: b.files }
+}
+
 function grade(found: ReturnType<typeof discover>['found']): Graded[] {
   // Also scan each skill's REFERENCED/bundled files (references/*.md, scripts/*) so a
   // payload hidden outside the SKILL.md still counts — read-only, bounded (see readBundle).
@@ -223,7 +233,7 @@ async function runScan(argv: string[]): Promise<number> {
       generatedAt: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
       locations: locations.filter((l) => l.exists).map((l) => ({ source: l.source, dir: tilde(l.dir), count: l.count })),
       skills: skills.map((s, i) => {
-        const o = optimizeSkill(found[i].md)
+        const o = optimizeSkill(found[i].md, bundleOptsFor(found[i].path))
         const win = o.savedPct > 0
         // Upload ONLY the computed findings from `a` — never the rest of the
         // analysis (which carries the skill's own description text). Red line:
@@ -314,7 +324,7 @@ function runPlan(argv: string[]): number {
 
 function runReport(file?: string): number {
   if (!file) { console.error('usage: skillmoo report <SKILL.md>'); return 1 }
-  const a = analyzeSkill(readFileSync(file, 'utf8'))
+  const a = analyzeSkill(readFileSync(file, 'utf8'), bundleOptsFor(file))
   console.log('\n  ' + gradeBadge(a.overall.grade) + '  ' + c.bold(a.frontmatter.name ?? relative(process.cwd(), file)) + c.dim('  ·  ' + a.tokens.total + ' tok  ·  gate ' + a.overall.gate))
   console.log('  ' + c.dim(a.overall.verdict) + '\n')
   for (const f of a.findings) {
@@ -334,8 +344,7 @@ async function runOptimize(file: string | undefined, argv: string[]): Promise<nu
   if (!argv.includes('--pro')) {
     // Same bundle context the scan uses — so optimize's suggestions (e.g. a dangling
     // references/ link) match what `skillmoo scan` reported. Read-only.
-    const b = readBundle(file)
-    const o = optimizeSkill(md, b.bundle ? { ...(b.text ? { bundleText: b.text } : {}), bundleFiles: b.files } : undefined)
+    const o = optimizeSkill(md, bundleOptsFor(file))
     console.log('')
     if (o.savedPct > 0) {
       console.log('  ' + c.bold('one-click optimize') + '   ' + c.dim(`${o.tokensBefore} → `) + c.green(String(o.tokensAfter)) + c.dim(' tok  ') + c.bold(c.green(`−${o.savedPct}%`)) + (o.gradeAfter !== o.gradeBefore ? c.dim('   grade ' + o.gradeBefore + '→') + c.green(o.gradeAfter) : ''))
@@ -389,7 +398,7 @@ async function runOptimize(file: string | undefined, argv: string[]): Promise<nu
     return (j.choices?.[0]?.message?.content ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
   }
 
-  const r = await optimizePro(md, chat)
+  const r = await optimizePro(md, chat, bundleOptsFor(file))
   s.write(`\n  ${c.bold(r.mode === 'semantic' ? '✓ Pro semantic optimize — verified' : '↩ Pro rewrite rejected → safe rule-based fallback')}   `)
   s.write(c.dim(`${r.tokensBefore} → `) + (r.savedPct > 0 ? c.green(String(r.tokensAfter)) : String(r.tokensAfter)) + c.dim(' tok') + (r.savedPct > 0 ? '  ' + c.bold(c.green(`−${r.savedPct}%`)) : '') + (r.gradeAfter !== r.gradeBefore ? c.dim('  grade ' + r.gradeBefore + '→') + c.green(r.gradeAfter) : '') + '\n')
   for (const ck of r.checks) s.write(`    ${ck.pass ? c.green('✓') : c.red('✗')} ${c.dim(ck.name)} ${c.dim('— ' + ck.detail)}\n`)
