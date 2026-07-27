@@ -25,6 +25,33 @@ project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The credential-exfiltration rule was firing only on legitimate code — 3 for 3.** Measured
+  across 140 public skills from 9 repos (87 with a bundle): this `critical` rule produced 3
+  findings and **all three were false positives** (3.4%, 95% CI 1.2–9.7%), with **zero true
+  positives**. `anthropics/skills` **pptx** (`os.environ.copy()` handed to a subprocess, plus an
+  AF_UNIX socket used to *detect* sandbox restrictions), `cloudflare/skills` (two **single-key**
+  reads inside an f-string URL), `obra/superpowers` **brainstorming** (`process.env.X` config
+  reads plus a `127.0.0.1` WebSocket) all graded **F / BLOCK**. It went unnoticed because the
+  "official skills, zero false blocks" benign arm analysed SKILL.md **without bundles**, so the
+  rule was never exercised against bundled scripts.
+
+  Five mechanisms, each traced to a line: a tainted name matching inside a **quoted literal**; a
+  tainted name matching in a **property position** (`.env.` inside `process.env.KEY` silently
+  defeated the rule's own single-key exclusion); `===` parsed as an assignment; the 80-char RHS
+  cap **severing** an expression and manufacturing a whole-env read; and the sink-argument
+  extractor **scavenging forward past end-of-line** onto an unrelated call. Plus, in
+  `scriptScan`, only the *first* host in a bundle was kept — so one comment containing
+  `127.0.0.1` disarmed the raw-IP check for everything after it.
+
+  What was **rejected** matters more than what shipped: narrowing the sinks, reducing taint to
+  direct aliasing, or confining taint per file each let genuine credential stealers fall from
+  BLOCK to REVIEW (13 measured escapes), and a naive literal scrubber let the three most
+  idiomatic whole-env reads escape — `subprocess.check_output("printenv")`,
+  `open("/proc/self/environ")`, `execSync('printenv')`. `.send`/`.write`, multi-pass
+  propagation and whole-bundle concatenation are all **kept**.
+
+  Result on real bundles: critical exfil findings **3 → 0**; blocking skills **4 → 1**. Test
+  coverage **294 → 316** for the three attack classes the suite could not see.
 - **Every CLI command now grades on the whole bundle.** `skillmoo report <SKILL.md>` analysed
   the file alone even when run inside a real skill folder. On a skill whose risk lives in
   `scripts/` it printed **A 90/100 · 1 finding** where the full bundle grades **D 57/100 ·

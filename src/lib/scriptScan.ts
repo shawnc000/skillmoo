@@ -77,13 +77,34 @@ const BEHAVIORS: Behavior[] = [
   { cap: 'install', label: 'Installs packages', severity: 'medium', re: /\b(?:pip3?|npm|pnpm|yarn|apt|apt-get|brew|gem|go|cargo)\b[^\n]{0,40}\b(?:install|add)\b/i, detail: 'pulls third-party packages (supply chain)' },
 ]
 
-const HOST_RE = /https?:\/\/[^\s"')]+|\b(?:\d{1,3}\.){3}\d{1,3}\b/i
 // Sensitive credential MATERIAL / FILES (not just a $API_KEY env var). Reading
 // these + network is a genuine theft flow; reading a config env var + network is
 // just an API/deploy client. This is what gates a benign capability from a
 // CRITICAL exfil verdict — static analysis sees the flow, not the intent.
 const SENSITIVE_SECRET_RE = /~\/\.ssh\/\S+|\.aws\/credentials|\bid_rsa\b|\bid_ed25519\b|\/etc\/(?:passwd|shadow)|-----BEGIN[A-Z\s]*PRIVATE KEY/i
-const RAW_IP_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/
+
+/**
+ * A LOOPBACK / private / link-local / documentation address is not an exfiltration
+ * destination — it is where a local dev server binds (`127.0.0.1`, `0.0.0.0`, `192.168.x.x`)
+ * or a doc example. Only a ROUTABLE literal IP carries the "skipped DNS on purpose" signal
+ * this gates on. Prefixes are ^-anchored and dot-terminated so `100.64.x`, `172.160.x` and
+ * `10x.x.x.x` are correctly treated as public.
+ */
+const LOCAL_IP_RE = /^(?:127\.|0\.|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2\d|3[01])\.|255\.|192\.0\.2\.|198\.51\.100\.|203\.0\.113\.)/
+
+/**
+ * IPs that are actually a DESTINATION — a URL host, or the target of a transfer command.
+ * Restricting to destinations is mandatory, not cosmetic: scanning every IP-shaped string
+ * false-flagged a real skill whose reference doc merely DOCUMENTS an allowlist CIDR. And
+ * scanning only the FIRST host in the bundle (the previous behaviour) meant one comment
+ * containing `127.0.0.1` anywhere above the payload disarmed the check for the whole bundle.
+ */
+const destIps = (txt: string): string[] => {
+  const out: string[] = []
+  for (const m of txt.matchAll(/https?:\/\/(?:[^/@\s]*@)?((?:\d{1,3}\.){3}\d{1,3})(?=[:/?#\s"')]|$)/gi)) out.push(m[1])
+  for (const m of txt.matchAll(/\b(?:curl|wget|nc|ncat|netcat|scp|sftp|rsync|telnet|ssh)\b[^\n]{0,80}?\b((?:\d{1,3}\.){3}\d{1,3})\b/gi)) out.push(m[1])
+  return out
+}
 
 const CAP_ORDER: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3 }
 
@@ -96,7 +117,6 @@ export function scanScripts(md: string, opts?: { defensivePurpose?: boolean }): 
   let anySecret = false
   let anyNetwork = false
   let sensitiveSecret = false
-  let host = ''
 
   for (const { code } of scripts) {
     for (const b of BEHAVIORS) {
@@ -109,8 +129,6 @@ export function scanScripts(md: string, opts?: { defensivePurpose?: boolean }): 
       if (b.cap === 'network') anyNetwork = true
     }
     if (SENSITIVE_SECRET_RE.test(code)) sensitiveSecret = true
-    const h = code.match(HOST_RE)
-    if (h && !host) host = h[0]
   }
 
   for (const c of seenCap.values()) capabilities.push(c)
@@ -128,7 +146,9 @@ export function scanScripts(md: string, opts?: { defensivePurpose?: boolean }): 
     // Auth pattern (Jira/GitHub encode `email:token` for the header) — benign, not
     // obfuscation; counting it flagged every auth-client script as exfiltration.
     const encoded = seenCap.get('encoded')?.severity === 'critical'
-    const rawIp = !!host && RAW_IP_RE.test(host)
+    // Every script, not just the first host, and only genuine destinations. `http://127.0.0.1@45.77.12.9/`
+    // (userinfo obfuscation) resolves to the routable half, which is what this now reads.
+    const rawIp = scripts.some(({ code }) => destIps(code).some((ip) => !LOCAL_IP_RE.test(ip)))
     if (sensitiveSecret || encoded || rawIp) {
       // Real MECHANICS block regardless: decode-and-run, or key MATERIAL sent to a raw
       // IP (a genuine key→IP flow). But a raw IP ALONE, in a security-hardening skill,

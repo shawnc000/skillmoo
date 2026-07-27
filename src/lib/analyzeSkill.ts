@@ -913,19 +913,55 @@ const WHOLE_ENV = /(?:\.\.\.\s*)?process\.env\b(?!\s*[.[])|(?:JSON\.stringify|Ob
  * REVIEW floor (reads-secret + network) rather than a clean pass, and the human/flywheel
  * resolves intent. Anchored regexes → no catastrophic backtracking.
  */
+/**
+ * A tainted NAME that appears only inside a QUOTED LITERAL is text, not a reference:
+ * `args = ["-env:UserInstallation=…"] + args` does not put the environment into `args`, and
+ * `tokenSource === 'env'` is a comparison against a string. Blanking the literal kills the
+ * taint explosion that made 187 unrelated variables "hold the environment".
+ *
+ * TWO CARVE-OUTS, both found by adversarial testing of the naive version:
+ *  - `${…}` / `{…}` interpolations are KEPT — they ARE real references, so
+ *    `f"{dict(env)}"` and `` `${JSON.stringify(env)}` `` must stay tainted.
+ *  - a literal that IS the env dump, or that is being handed to an evaluator, is kept
+ *    WHOLE. Otherwise `subprocess.check_output("printenv")`, `open("/proc/self/environ")`
+ *    and `execSync('printenv')` — the three most IDIOMATIC whole-env reads in Python and
+ *    Node — would lose their taint at the source and a credential stealer would grade A.
+ *    Only `printenv` is preserved: bare `env` is not a WHOLE_ENV token, so keeping it buys
+ *    nothing and re-breaks the `tokenSource === 'env'` false positive.
+ */
+const STR_LITERAL = /(['"])(?:\\.|(?!\1)[^\\\n])*\1/g
+const ENV_DUMP_LITERAL = /^(['"])\s*printenv\s*\1$|\/proc\/self\/environ/i
+const CODE_EVAL = /\b(?:eval|exec|execSync|execFileSync|spawnSync|check_output|popen|system|Function)\s*\(|subprocess\.run\s*\(/i
+const stripLiterals = (s: string): string =>
+  CODE_EVAL.test(s) ? s : s.replace(STR_LITERAL, (lit) =>
+    ENV_DUMP_LITERAL.test(lit) ? lit : (lit.match(/\$?\{[^{}]*\}/g) || []).join(' '))
+
 function credentialExfil(scan: string): boolean {
   // Direct shell: whole env piped/redirected into an egress or encoder.
   if (/(?:\b(?:printenv|env|set|declare\s+-x)\b|\/proc\/self\/environ)[^\n]{0,60}(?:\||>|>>)[^\n]{0,40}(?:[^\n]{0,120}\b(?:curl|wget|nc|ncat|base64|xxd|openssl|nslookup|dig|scp|telnet|http)\b|\s*\n[^\n]{0,120}\b(?:curl|wget|nc|ncat|scp|rsync)\b[^\n]{0,110}[@<])/i.test(scan)) return true
   // Tainted variables bound to the WHOLE env — anchored to a statement start (no O(n^2)),
   // with a second pass so a copy-of-a-copy (Y = X where X = process.env) is tainted too.
   const tainted = new Set<string>()
-  const assign = /(?:^|[\n;{,(]|=>)\s*(?:const |let |var |final |auto |my |\$)?\s*([A-Za-z_$][\w$]*)\s*(?::?=|=)\s*([^\n;]{0,80})/g
+  // `(?!=)` on the operator: `if (tokenSource === 'env')` is a COMPARISON, and parsing it as
+  // an assignment created a variable named `tokensource` holding `== 'env')`.
+  const assign = /(?:^|[\n;{,(]|=>)\s*(?:const |let |var |final |auto |my |\$)?\s*([A-Za-z_$][\w$]*)\s*(?::?=|=)(?!=)\s*([^\n;]{0,80})/g
   let m: RegExpExecArray | null
   for (let pass = 0; pass < 3; pass++) {
     const before = tainted.size
     while ((m = assign.exec(scan))) {
-      const name = m[1].toLowerCase(), rhs = m[2]
-      if (WHOLE_ENV.test(rhs) || [...tainted].some((t) => new RegExp('(?<![A-Za-z0-9_])' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9_(])', 'i').test(rhs))) tainted.add(name)
+      // The RHS capture is CAPPED at 80 chars, and a cap can slice an expression mid-line and
+      // MANUFACTURE a whole-env read: an f-string URL holding two SINGLE-KEY reads
+      // (`…/{os.environ['ACCOUNT']}/{os.environ['GATEWAY']}/…`) truncates to a bare trailing
+      // `os.environ`, whose "not followed by . or [" lookahead is then vacuously true. When the
+      // capture was severed we cannot see what follows, so drop the partial tail token rather
+      // than read it as a dump. Raising the cap does not help — any cap can sever.
+      const end = m.index + m[0].length
+      const severed = m[2].length === 80 && end < scan.length && scan[end] !== '\n' && scan[end] !== ';'
+      const name = m[1].toLowerCase(), rhs = stripLiterals(severed ? m[2].replace(/[\w.$]+$/, '') : m[2])
+      // `(?<![A-Za-z0-9_.])`: a name after a DOT is a property, not the variable. Without this,
+      // once any variable named `env` is tainted the substring `.env.` inside `process.env.KEY`
+      // re-taints it — silently defeating WHOLE_ENV's deliberate single-key exclusion.
+      if (WHOLE_ENV.test(rhs) || [...tainted].some((t) => new RegExp('(?<![A-Za-z0-9_.])' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9_(])', 'i').test(rhs))) tainted.add(name)
     }
     assign.lastIndex = 0
     if (tainted.size === before) break
@@ -933,12 +969,18 @@ function credentialExfil(scan: string): boolean {
   // A network SINK CALL whose (balanced) argument list contains the whole-env expr or a
   // tainted var. Using the balanced args (not a fixed window) means a `console.log(process.env)`
   // on the NEXT statement after a `fetch(...)` is NOT falsely captured.
-  const sinkRe = /\b(?:fetch|axios\.(?:post|put|request)|requests?\.(?:post|put|request)|httpx?\.(?:post|put)|http\.request|http\.client|net\/http|Net::HTTP\.(?:post|put)|https?\.request|urlopen)\s*\(|\.(?:post|put|send|write)\s*\(|\bsocket\.\w+\s*\(|(?:\bcurl|\bwget|\bnc|\bncat)\b[^\n]{0,140}(?:-d\b|--data(?:-binary|-raw)?\b|\|)/gi
+  const sinkRe = /\b(?:fetch|axios\.(?:post|put|request)|requests?\.(?:post|put|request)|httpx?\.(?:post|put)|http\.request|http\.client|net\/http|Net::HTTP\.(?:post|put)|https?\.request|urlopen)\s*\(|\.(?:post|put|send|write)\s*\(|\bsocket\.(?:send\w*|write|end|emit)\s*\(|(?:\bcurl|\bwget|\bnc|\bncat)\b[^\n]{0,140}(?:-d\b|--data(?:-binary|-raw)?\b|\|)/gi
   const hasVar = (s: string) => [...tainted].some((v) => new RegExp('(?<![A-Za-z0-9_$])' + v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9_])', 'i').test(s))
   let s: RegExpExecArray | null
   while ((s = sinkRe.exec(scan))) {
-    // balanced argument text of this sink call (capped), stopping when parens close.
+    // balanced argument text of this sink call (capped), stopping when parens close —
+    // and the '(' must open on the sink's OWN line. Unbounded, indexOf walks forward to the
+    // next '(' ANYWHERE later in the document: the shell `curl … -d` alternative carries no
+    // '(' of its own, so it adopted the arguments of an unrelated call 17 lines below and
+    // read those as its payload. Out of line → fall back to the flat slice.
+    const eol = scan.indexOf('\n', s.index)
     let i = scan.indexOf('(', s.index)
+    if (i >= 0 && eol >= 0 && i > eol) i = -1
     let a = ''
     if (i >= 0) { let depth = 0; for (let n = 0; i < scan.length && n < 400; i++, n++) { const c = scan[i]; a += c; if (c === '(') depth++; else if (c === ')') { if (--depth <= 0) break } else if (c === '\n' && depth === 0) break } }
     else a = scan.slice(s.index, s.index + 200) // curl/nc shell form
@@ -1530,7 +1572,7 @@ export function analyzeSkill(mdRaw: string, opts?: { bundleText?: string; bundle
       severity: 'critical',
       category: 'exfil',
       title: 'Dumps the environment to the network — exfiltration chain',
-      detail: 'Reads the WHOLE environment (printenv / env / process.env harvested) or a credential value and pipes or posts it to the network. A notification posts a message; sending secrets/every variable is credential theft, whatever the destination (including a Slack/Discord webhook).',
+      detail: 'Reads the WHOLE environment (printenv / env / process.env harvested) or a credential value and pipes or posts it to the network. A notification posts a message; sending secrets/every variable is credential theft, whatever the destination (including a Slack/Discord webhook). Excluded on purpose: handing the environment to a subprocess, writing it to a local file, and anything bound for a loopback address — those are not egress.',
       // The verdict comes from dataflow, so cite where the environment read is — the
       // reader can then follow the value to the sink themselves.
       evidence: locateFirst(secInput, WHOLE_ENV),
