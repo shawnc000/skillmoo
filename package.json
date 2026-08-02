@@ -48,9 +48,10 @@
     "eval:portfolio-goal": "tsx scripts/eval-portfolio-goal.ts",
     "eval:verification": "tsx scripts/eval-verification.ts",
     "eval:setup": "tsx scripts/eval-setup.ts",
+    "eval:capsule": "tsx scripts/eval-capsule.ts",
     "eval:catalog-v2": "tsx scripts/eval-catalog-v2.ts",
     "eval:cli-match": "npm run build && tsx scripts/eval-cli-match.ts",
-    "eval:release": "npm run typecheck && npm run eval:provenance && npm run eval:methodology && npm run eval:portfolio-goal && npm run eval:verification && npm run eval:setup && npm run eval:catalog-v2 && npm run eval:cli-match"
+    "eval:release": "npm run typecheck && npm run eval:provenance && npm run eval:methodology && npm run eval:portfolio-goal && npm run eval:verification && npm run eval:setup && npm run eval:capsule && npm run eval:catalog-v2 && npm run eval:cli-match"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

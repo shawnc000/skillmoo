@@ -36,6 +36,7 @@ import { runVerifyCommand } from './verify'
 import { runSetupCommand } from './setup'
 import { buildPublishReport, shouldPublishScan } from './sharePolicy'
 import { runCatalogCommand } from './catalog'
+import { runCapsuleCommand } from './capsule'
 
 // Injected from the repository package.json at build time (build-cli.mjs) so the reported
 // version can NEVER drift from the published one (it silently did until 2026-07-18).
@@ -735,6 +736,10 @@ function help(): void {
   ${c.bold('skillmoo catalog')}             ${c.dim('offline pinned-complete artifact pilot in the exact CLI package')}
     ${c.dim('list')}                        ${c.dim('show embedded artifact IDs, evidence, license, files, and bytes')}
     ${c.dim('prepare --artifact <sa_id>')}  ${c.dim('materialize exact bytes into private cache and create a no-target-mutation setup plan')}
+  ${c.bold('skillmoo capsule')}             ${c.dim('share and replay an exact catalog-backed setup as an inert local file')}
+    ${c.dim('create --receipt <file>')}      ${c.dim('derive a privacy-minimized capsule from eligible sender-local evidence')}
+    ${c.dim('inspect --capsule <file>')}     ${c.dim('verify identity and trust boundaries without writes or network')}
+    ${c.dim('prepare --capsule <file>')}     ${c.dim('create the existing immutable install preview; never applies it')}
 
   ${c.dim('Static analysis is 100% local — no model, no signup. `optimize --pro` and explicitly approved `verify` use your endpoint.')}
   ${c.dim('All static commands stay offline unless you explicitly pass `scan --publish`; --no-share always wins.')}
@@ -752,6 +757,7 @@ async function main(): Promise<void> {
     case 'verify': code = await runVerifyCommand(rest, VERSION); break
     case 'setup': code = runSetupCommand(rest); break
     case 'catalog': code = runCatalogCommand(rest); break
+    case 'capsule': code = await runCapsuleCommand(rest); break
     case 'report': code = runReport(rest.find((a) => !a.startsWith('-'))); break
     case 'optimize': code = await runOptimize(rest.find((a) => !a.startsWith('-')), rest); break
     case '-v': case '--version': case 'version': console.log(VERSION); break

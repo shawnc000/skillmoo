@@ -21,3 +21,6 @@ These invariants protect the credibility of the public SkillMOO engine.
 17. Published reports must use anonymous ordinal labels and omit local paths, Skill names, details, evidence snippets, raw content, and content-derived changes.
 18. Verification identity binds all regular package files; network requests refuse redirects and non-transient retries and stay inside hard aggregate budgets.
 19. Discovery caps, unreadable eligible files, and incomplete bundles fail closed. Partial evidence cannot receive a clean grade, report, optimization, or setup plan.
+20. A Setup Capsule may claim exact setup replayability only when every ordered Skill maps by name, file count, normalized complete-manifest bridge, and assessment to an embedded artifact in the exact CLI/catalog version. Any mismatch refuses creation.
+21. Capsule evidence remains sender-local self-attestation: unsigned, environment-scoped, not experiment-replayable, without online revocation freshness, and never transferable as the recipient's `verified here` state.
+22. Capsule create/inspect/prepare are local file operations. The capsule must omit private suite/task labels, prompts/outputs, raw observations, provider/model labels, invocation/receipt IDs, free-form receipt limitations, paths, identities, and credentials.

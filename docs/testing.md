@@ -23,6 +23,7 @@ The demo scan intentionally contains an unsafe Skill and should exit `2`; that e
 - Match/catalog change: test constraints, abstention, trust-gate exclusion, exact index/catalog parity, offline materialization, tamper resistance, and bundled-binary parity.
 - Setup change: test prepare non-mutation, exact confirmation, complete-tree analysis, target/source drift, private modes, rollback, caught-failure compensation, simulated crash recovery, concurrency, and damaged-state refusal.
 - Verification change: test suite validation, deterministic graders, all-regular-file identity (including binary assets), duplicate rejection, aggregate budgets, redirect refusal, transient-only retries, provider/timeouts, redaction, receipt integrity, simulation non-promotion, and summary handling.
+- Capsule change: run `npm run eval:capsule`, verification/catalog/setup regressions, build and pack; prove deterministic CLI/shared-core bytes, privacy canaries, exact manifest bridging, duplicate-key/unknown-field rejection, zero-write inspect, and prepare without Agent-root mutation.
 - Shared engine change: run both repositories' affected suites and verify the intended source parity without copying private assets.
 - Documentation-only change: run methodology/provenance when rating or evidence claims are touched; otherwise use Markdown/diff checks.
 

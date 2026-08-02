@@ -55,6 +55,7 @@ Reproduce it yourself: `npx skillmoo scan --dir examples/demo-skills --no-share`
 | `skillmoo catalog prepare …` | verify exact artifact bytes and create a no-mutation setup plan |
 | `skillmoo setup …` | preview, explicitly apply, rollback, or recover a complete local setup |
 | `skillmoo verify …` | paired current-vs-proposed runtime test in one declared environment |
+| `skillmoo capsule …` | create, inspect, or prepare an exact catalog-backed setup capsule offline |
 
 Every optimize is **verified before it applies** — grade, safety gate, and code blocks
 can only stay or improve. It can never make a skill worse.
@@ -73,6 +74,23 @@ complete-package gate. Most entries are manifest-screened historical snapshots w
 unknown package evidence and a mutable reference URL; only the four pilot artifacts expose
 an immutable package, artifact ID, and setup handoff. Re-scan the complete pinned package
 before setup. The exact combination has not been runtime-tested.
+
+### Share an exact setup without inventing certification
+
+```bash
+skillmoo capsule create --receipt ./verification.json --out ./setup-capsule.json
+skillmoo capsule inspect --capsule ./setup-capsule.json
+skillmoo capsule prepare --capsule ./setup-capsule.json --target-root ~/.codex/skills --out ./setup.json
+```
+
+Capsule v1 is deliberately narrow: only 1–3 ordered artifacts embedded in the
+exact CLI/catalog version qualify, and the receipt must contain a completed
+goal-passing, non-regressed real-provider run. The JSON is content-addressed and excludes
+private suite labels/tasks, prompts/outputs, provider/model labels, local paths,
+and receipt identities. It replays exact setup bytes—not the private experiment—
+and is local self-attestation, not SkillMOO signing or certification. SkillMOO did not
+verify the sender's identity or that the declared model run occurred; the recipient must
+verify again locally.
 
 ### Preview-first setup and pinned artifacts
 
