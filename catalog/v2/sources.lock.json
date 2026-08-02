@@ -1,0 +1,13 @@
+{
+  "protocolVersion": "skillmoo-artifact-source-lock/1.0",
+  "repository": "alirezarezvani/claude-skills",
+  "repositoryId": "R_kgDOQFGGXQ",
+  "branch": "main",
+  "commit": "aa8d778811a557a2c28ccadda4cf3d0bd028a4cc",
+  "repositoryTreeOid": "1d8b29b126be14feed568463fd1d92a9f95d3c06",
+  "license": {
+    "spdx": "MIT",
+    "path": "LICENSE",
+    "sha256": "a20126646f93d32a8989c3cf4772d59194f405034f7babe7daebeac22b8ab151"
+  }
+}

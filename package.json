@@ -1,6 +1,6 @@
 {
   "name": "skillmoo",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "description": "Grade the AI agent skills you've installed — safety, token bloat, and conflicts. 100% local static analysis, no model, no signup.",
   "type": "module",
   "bin": {
@@ -8,10 +8,11 @@
   },
   "files": [
     "bin/skillmoo.mjs",
-    "README.md"
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=18.19.0"
   },
   "keywords": [
     "claude",
@@ -43,11 +44,17 @@
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "node scripts/build-cli.mjs",
     "eval:provenance": "tsx scripts/eval-provenance.ts",
-    "eval:methodology": "tsx scripts/eval-methodology.ts"
+    "eval:methodology": "tsx scripts/eval-methodology.ts",
+    "eval:portfolio-goal": "tsx scripts/eval-portfolio-goal.ts",
+    "eval:verification": "tsx scripts/eval-verification.ts",
+    "eval:setup": "tsx scripts/eval-setup.ts",
+    "eval:catalog-v2": "tsx scripts/eval-catalog-v2.ts",
+    "eval:cli-match": "npm run build && tsx scripts/eval-cli-match.ts",
+    "eval:release": "npm run typecheck && npm run eval:provenance && npm run eval:methodology && npm run eval:portfolio-goal && npm run eval:verification && npm run eval:setup && npm run eval:catalog-v2 && npm run eval:cli-match"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.28.1",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }

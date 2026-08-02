@@ -16,6 +16,10 @@ mkdirSync(dirname(outfile), { recursive: true })
 
 // Single source of truth for the CLI version: this package.json (no drift with npm).
 const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version
+const artifactIndex = JSON.parse(readFileSync(join(root, 'catalog', 'v2', 'index.json'), 'utf8'))
+if (artifactIndex.cliVersion !== version) {
+  throw new Error(`catalog CLI version ${artifactIndex.cliVersion} does not match package version ${version}`)
+}
 
 await build({
   entryPoints: [join(root, 'cli', 'index.ts')],

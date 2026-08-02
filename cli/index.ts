@@ -7,79 +7,94 @@
  *   skillmoo report <file>        full report for one SKILL.md
  *   skillmoo optimize <file>      rule-based one-click optimize (before → after)
  *
- * Analysis is 100% local — no model, no signup — and reuses the same engine as the
- * website (src/lib/*). The one network call is the OPT-OUT share: an interactive
- * `scan` (a TTY, no --json/--report) uploads an ANONYMIZED report — grades + findings
- * only, home paths tilde-stripped, never the skill's text — to mint a shareable
- * skillmoo.com/r/<id> link. `--no-share` / `--json` / a piped or CI run stays fully
- * offline. This is the free wedge + the data intake.
+ * Static analysis is 100% local — no model, no signup — and reuses the same engine as the
+ * website (src/lib/*). Static commands make no network call unless the user passes
+ * the explicit `scan --publish` sharing flag. Published reports contain derived
+ * anonymous labels and derived grade/finding categories, never names, paths, snippets,
+ * evidence, or Skill file contents.
  */
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { writeFileSync, existsSync } from 'node:fs'
 import { relative, join } from 'node:path'
 import { homedir } from 'node:os'
-import { defaultRoots, discover, readBundle, type Root } from './discover'
+import { defaultRoots, discover, readBundle, readPrimarySkill, type Root } from './discover'
 import { analyzeSkill, type SkillAnalysis } from '../src/lib/analyzeSkill'
 import { analyzePortfolio } from '../src/lib/conflictScan'
+import { judgeAllListings, judgeListing, alwaysOnTokens, HARNESS_LISTINGS } from '../src/lib/listingBudget'
+import { crossSkillRisks } from '../src/lib/crossSkillScan'
 import { optimizeSkill } from '../src/lib/optimizeSkill'
 import { optimizePro, type ChatFn } from '../src/lib/optimizePro'
 import { composePortfolio } from '../src/lib/composePortfolio'
-import { c, gradeBadge, padEndV } from './format'
+import { planPortfolioGoal } from '../src/lib/portfolioGoalPlan'
+import { planGoal } from '../src/lib/bundleMatch'
+import { summarizeCombinationEvidence, summarizeSkillEvidence } from '../src/lib/skillTrust'
+import { MATCH_CATALOG_META, MATCH_SKILLS } from '../src/data/matchCatalog'
+import { ARTIFACT_INDEX } from '../src/data/artifactIndex'
+import { completePackageRejectedNames, filterCompletePackageEligible } from '../src/lib/artifactRouting'
+import { c, gradeBadge, padEndV, safeTerminalText, wrapTo } from './format'
 import { renderHtml, type ReportData } from './report-html'
+import { runVerifyCommand } from './verify'
+import { runSetupCommand } from './setup'
+import { buildPublishReport, shouldPublishScan } from './sharePolicy'
+import { runCatalogCommand } from './catalog'
 
-// Injected from packages/cli/package.json at build time (build-cli.mjs) so the reported
+// Injected from the repository package.json at build time (build-cli.mjs) so the reported
 // version can NEVER drift from the published one (it silently did until 2026-07-18).
 // A dev run via tsx (no define) falls back to a clearly-not-released marker.
 declare const __CLI_VERSION__: string | undefined
 const VERSION = typeof __CLI_VERSION__ !== 'undefined' ? __CLI_VERSION__ : '0.0.0-dev'
+const COMPLETE_PACKAGE_REJECTED = completePackageRejectedNames(ARTIFACT_INDEX)
+const MATCHABLE_SKILLS = filterCompletePackageEligible(MATCH_SKILLS, ARTIFACT_INDEX)
 const tilde = (p: string) => p.replace(homedir(), '~')
 
 interface Graded {
-  name: string; path: string; source: string
+  name: string; path: string; source: string; md: string
   a: SkillAnalysis
   tokens: number; grade: string; gate: string
   unsafe: boolean; review: boolean; bloated: boolean; bloatRatio: number
-  reason: string
+  reason: string; complete: boolean; issues: string[]
+  opts?: { bundleText?: string; bundleFiles?: string[] }
 }
 
 /** The bundle context for a skill on disk — the SAME evidence `skillmoo scan` grades on.
  *  Every command must analyse the whole bundle when one exists: a grade measured on
- *  SKILL.md alone cannot see a payload in scripts/, so `skillmoo report` used to print
- *  A 90/100 where the full bundle grades D 57/100. Read-only, bounded. */
-function bundleOptsFor(skillPath: string): { bundleText?: string; bundleFiles?: string[] } | undefined {
-  const b = readBundle(skillPath)
+ *  SKILL.md alone cannot see a payload in scripts/, and mixing the two bases is what
+ *  produced the false "D → A" on the web card (see optimizePlan). Read-only, bounded. */
+function bundleOptsFor(b: ReturnType<typeof readBundle>): { bundleText?: string; bundleFiles?: string[] } | undefined {
   if (!b.bundle) return undefined
   return { ...(b.text ? { bundleText: b.text } : {}), bundleFiles: b.files }
 }
+
+const bundleIssueSummary = (issues: string[]): string => `incomplete bundle evidence: ${issues[0] ?? 'unknown bundle read failure'}`
 
 function grade(found: ReturnType<typeof discover>['found']): Graded[] {
   // Also scan each skill's REFERENCED/bundled files (references/*.md, scripts/*) so a
   // payload hidden outside the SKILL.md still counts — read-only, bounded (see readBundle).
   const analyzed = found.map((s) => {
     const bundle = readBundle(s.path)
-    const opts = bundle.bundle
-      ? { ...(bundle.text ? { bundleText: bundle.text } : {}), bundleFiles: bundle.files }
-      : undefined
-    return { ...s, a: analyzeSkill(s.md, opts), bundleFiles: bundle.files }
+    const opts = bundleOptsFor(bundle)
+    return { ...s, a: analyzeSkill(s.md, opts), opts, complete: bundle.complete, issues: bundle.issues }
   })
   const toks = analyzed.map((x) => x.a.tokens.total).sort((a, b) => a - b)
   const median = toks.length ? toks[Math.floor(toks.length / 2)] : 0
   const bloatThresh = Math.max(Math.round(median * 1.6), 350)
   return analyzed.map((x) => {
-    const g = x.a.overall.grade, gate = x.a.overall.gate, lvl = x.a.risk.level
+    const g = x.complete ? x.a.overall.grade : '?', gate = x.complete ? x.a.overall.gate : 'review', lvl = x.a.risk.level
     const tokens = x.a.tokens.total
-    const unsafe = gate === 'block' || g === 'F' || lvl === 'high' || lvl === 'critical'
-    const review = !unsafe && (gate === 'review' || lvl === 'medium')
-    const bloated = tokens > bloatThresh
+    const unsafe = x.complete && (gate === 'block' || g === 'F' || lvl === 'high' || lvl === 'critical')
+    const review = !unsafe && (!x.complete || gate === 'review' || lvl === 'medium')
+    const bloated = x.complete && tokens > bloatThresh
     const ratio = median ? tokens / median : 1
     const topFinding = x.a.findings.find((f) => f.severity === 'critical' || f.severity === 'high') ?? x.a.findings[0]
-    const reason = unsafe
+    const reason = !x.complete
+      ? bundleIssueSummary(x.issues)
+      : unsafe
       ? (topFinding?.title ?? 'blocked by gate').toLowerCase()
       : bloated
         ? `${ratio.toFixed(1)}× median tokens`
         : review
           ? (topFinding?.title ?? 'needs review').toLowerCase()
           : 'clean'
-    return { name: x.name, path: x.path, source: x.source, a: x.a, tokens, grade: g, gate, unsafe, review, bloated, bloatRatio: ratio, reason }
+    return { name: x.name, path: x.path, source: x.source, md: x.md, a: x.a, tokens, grade: g, gate, unsafe, review, bloated, bloatRatio: ratio, reason, complete: x.complete, issues: x.issues, opts: x.opts }
   })
 }
 
@@ -99,7 +114,7 @@ async function publishReport(data: ReportData): Promise<void> {
     const res = await fetch(base + '/api/report', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ data }),
+      body: JSON.stringify({ data: buildPublishReport(data) }),
     })
     if (res.status === 501) { console.log(c.yellow('not enabled yet') + c.dim(' — hosted reports coming soon')); return }
     if (!res.ok) {
@@ -115,7 +130,7 @@ async function publishReport(data: ReportData): Promise<void> {
     console.log('     ' + c.cyan(j.url))
     console.log('')
     console.log('  ' + c.dim('See every finding in detail, ') + c.bold('optimize in one click') + c.dim(', restore anytime, and share.'))
-    console.log('  ' + c.dim('Uploaded grades & findings only — never your file contents.  (skip: ') + c.cyan('--no-share') + c.dim(')') + '\n')
+    console.log('  ' + c.dim('Uploaded anonymous labels, grades, finding categories, and counts — never names, paths, snippets, or file contents.  (skip: ') + c.cyan('--no-share') + c.dim(')') + '\n')
   } catch (e) {
     console.log(c.red('offline') + c.dim(' — ' + (e as Error).message))
   }
@@ -128,9 +143,18 @@ async function runScan(argv: string[]): Promise<number> {
   const roots = [...defaultRoots(), ...extra]
 
   const { found, locations } = discover(roots)
+  const truncatedLocations = locations.filter((location) => location.truncated).length
   if (found.length === 0) {
-    if (json) { console.log(JSON.stringify({ skills: [], locations }, null, 2)); return 0 }
+    if (json) {
+      console.log(JSON.stringify({ skills: [], locations, summary: { total: 0, complete: truncatedLocations === 0, incompleteSkills: 0, truncatedLocations } }, null, 2))
+      return truncatedLocations ? 2 : 0
+    }
     console.log('\n' + c.bold('◇ SkillMOO scan') + '\n')
+    if (truncatedLocations) {
+      console.log(c.red('  Scan incomplete: one or more roots exceeded a read/count/byte boundary.'))
+      console.log(c.dim('  No clean grade can be claimed until every eligible Skill is readable.\n'))
+      return 2
+    }
     console.log(c.dim('  No skills found. Looked in:'))
     for (const l of locations) console.log('    ' + c.gray(tilde(l.dir)))
     console.log('\n  ' + c.dim('Point at a skills folder with ') + c.cyan('skillmoo scan --dir <path>') + '\n')
@@ -141,22 +165,48 @@ async function runScan(argv: string[]): Promise<number> {
   const median = (() => { const t = skills.map((s) => s.tokens).sort((a, b) => a - b); return t[Math.floor(t.length / 2)] })()
   const bloatThresh = Math.max(Math.round(median * 1.6), 350)
   const portfolio = analyzePortfolio(skills.map((s) => ({ name: s.name, description: s.a.frontmatter.description ?? '' })))
+  // The listing is a fixed budget: past a point the harness silently drops the
+  // descriptions it matches your request against. Judge each harness we actually
+  // found skills under, not every harness we know about.
+  // Partition by harness first: a skill under ~/.codex/skills is never in Claude
+  // Code's listing, so judging the whole pile against each harness would invent
+  // a budget pressure neither one actually has.
+  const harnessOf = (src: string) => (/codex/i.test(src) ? 'codex' : /claude/i.test(src) ? 'claude-code' : '')
+  const byHarness = new Map<string, { name: string; description: string }[]>()
+  for (const s of skills) {
+    const h = harnessOf(s.source)
+    if (!h) continue
+    const e = { name: s.name, description: s.a.frontmatter.description ?? '' }
+    byHarness.set(h, [...(byHarness.get(h) ?? []), e])
+  }
+  const listings = judgeAllListings([]).flatMap((v) => {
+    const entries = byHarness.get(v.harness)
+    return entries?.length ? [judgeListing(entries, HARNESS_LISTINGS.find((h) => h.id === v.harness)!)] : []
+  })
+  // Always-on is per harness too; report the largest single listing as the standing cost.
+  const alwaysOn = Math.max(0, ...[...byHarness.values()].map((e) => alwaysOnTokens(e)))
+  const crossRisks = crossSkillRisks(skills.map((s) => ({ name: s.name, body: s.md })))
 
   const nUnsafe = skills.filter((s) => s.unsafe).length
   const nReview = skills.filter((s) => s.review).length
   const nBloat = skills.filter((s) => s.bloated).length
-  const nOk = skills.filter((s) => !s.unsafe && !s.review && !s.bloated).length
+  const nIncompleteSkills = skills.filter((s) => !s.complete).length
+  const scanComplete = nIncompleteSkills === 0 && truncatedLocations === 0
+  const nOk = skills.filter((s) => s.complete && !s.unsafe && !s.review && !s.bloated).length
 
   if (json) {
     console.log(JSON.stringify({
       version: VERSION,
       locations: locations.filter((l) => l.exists),
-      summary: { total: skills.length, medianTokens: median, unsafe: nUnsafe, review: nReview, bloated: nBloat, ok: nOk, conflicts: portfolio.conflicts.length },
-      skills: skills.map((s) => ({ name: s.name, path: s.path, source: s.source, grade: s.grade, gate: s.gate, score: s.a.overall.score, tokens: s.tokens, risk: s.a.risk.level, unsafe: s.unsafe, review: s.review, bloated: s.bloated, reason: s.reason, findings: s.a.findings.map((f) => ({ severity: f.severity, title: f.title })) })),
+      summary: { total: skills.length, complete: scanComplete, incompleteSkills: nIncompleteSkills, truncatedLocations, medianTokens: median, unsafe: nUnsafe, review: nReview, bloated: nBloat, ok: nOk, conflicts: portfolio.conflicts.length },
+      skills: skills.map((s) => ({ name: s.name, path: s.path, source: s.source, complete: s.complete, issues: s.issues, grade: s.grade, gate: s.gate, score: s.complete ? s.a.overall.score : null, tokens: s.tokens, risk: s.complete ? s.a.risk.level : 'unknown', unsafe: s.unsafe, review: s.review, bloated: s.bloated, reason: s.reason, findings: s.a.findings.map((f) => ({ severity: f.severity, title: f.title })) })),
       conflicts: portfolio.conflicts,
       broadTriggers: portfolio.broad,
+      alwaysOnTokens: alwaysOn,
+      listings,
+      crossSkillRisks: crossRisks,
     }, null, 2))
-    return 0
+    return scanComplete && nUnsafe === 0 ? 0 : 2
   }
 
   const out: string[] = []
@@ -167,7 +217,7 @@ async function runScan(argv: string[]): Promise<number> {
   const dshort = (p: string) => { const t = tilde(p); return t.length > 33 ? '…' + t.slice(-32) : t }
   for (const l of locations) {
     if (!l.exists) continue
-    out.push('  ' + c.gray('scan  ') + padEndV(c.cyan(l.source), 26) + padEndV(c.dim(dshort(l.dir)), 35) + c.bold(String(l.count)))
+    out.push('  ' + c.gray('scan  ') + padEndV(c.cyan(l.source), 26) + padEndV(c.dim(dshort(l.dir)), 35) + c.bold(`${l.count}${l.truncated ? ' capped' : ''}`))
   }
   out.push('  ' + c.dim('─'.repeat(56)))
   out.push('  ' + c.bold(`${skills.length} skills`) + c.dim(`  ·  median ${median} tok/call  ·  bloat cutoff ${bloatThresh}`))
@@ -175,8 +225,20 @@ async function runScan(argv: string[]): Promise<number> {
   out.push('')
   // summary line
   out.push('  ' + padEndV(c.dim('safety'), 13) + `${nUnsafe ? c.red('✕ ' + nUnsafe + ' unsafe') : c.green('✓ 0 unsafe')}   ${c.yellow('! ' + nReview + ' review')}   ${c.green('✓ ' + nOk + ' ok')}`)
+  if (!scanComplete) out.push('  ' + padEndV(c.dim('evidence'), 13) + c.red(`✕ incomplete · ${nIncompleteSkills} bundle${nIncompleteSkills === 1 ? '' : 's'} · ${truncatedLocations} capped root${truncatedLocations === 1 ? '' : 's'}`))
   out.push('  ' + padEndV(c.dim('bloat'), 13) + (nBloat ? c.yellow('~ ' + nBloat + ' bloated') : c.green('✓ none bloated')))
   out.push('  ' + padEndV(c.dim('conflicts'), 13) + (portfolio.conflicts.length ? c.yellow('⚠ ' + portfolio.conflicts.length + ' pair' + (portfolio.conflicts.length > 1 ? 's' : '')) : c.green('✓ none')))
+  if (listings.length) {
+    const cut = listings.filter((v) => v.overflows)
+    // Report the harness closest to its cap — that is the one that will bite first.
+    const tightest = [...listings].sort((a, b) => b.listingTokens / b.budgetTokens - a.listingTokens / a.budgetTokens)[0]
+    const pct = Math.round((tightest.listingTokens / tightest.budgetTokens) * 100)
+    out.push('  ' + padEndV(c.dim('listing'), 13) + (cut.length
+      ? c.red('✕ truncated in ' + cut.map((v) => v.harnessLabel).join(', '))
+      : (pct >= 80 ? c.yellow(`⚠ ${pct}% of ${tightest.harnessLabel} budget`) : c.green(`✓ fits (${pct}% of ${tightest.harnessLabel} budget)`)))
+      + c.dim(`  ·  ${alwaysOn} tok always-on, every turn`))
+  }
+  if (crossRisks.length) out.push('  ' + padEndV(c.dim('cross-skill'), 13) + c.yellow('⚠ ' + crossRisks.length + ' pair risk' + (crossRisks.length > 1 ? 's' : '')))
   out.push('')
 
   // table, worst first
@@ -203,29 +265,48 @@ async function runScan(argv: string[]): Promise<number> {
     }
     if (portfolio.conflicts.length > shown.length) out.push('    ' + c.dim(`… +${portfolio.conflicts.length - shown.length} more  (skillmoo scan --json)`))
   }
+  // listing budget: the harness silently drops the descriptions it matches on
+  for (const v of listings) {
+    out.push('')
+    const head = v.overflows ? c.red('listing overflow') : c.dim('listing budget')
+    out.push('  ' + head + c.dim(`  ${v.harnessLabel} · ${v.listingTokens.toLocaleString()} / ${v.budgetTokens.toLocaleString()} tok`))
+    for (const line of wrapTo(v.detail, 92)) out.push('    ' + (v.overflows ? c.yellow(line) : c.dim(line)))
+    for (const o of v.overLongEntries.slice(0, 3)) {
+      out.push('    ' + c.yellow(`${o.name}: description ${o.chars} chars > ${o.cap} cap — the tail is cut, and an exclusion clause at the end is lost`))
+    }
+  }
+  // cross-skill capability risks (advisory — never gates a grade)
+  if (crossRisks.length) {
+    out.push('')
+    out.push('  ' + c.dim('cross-skill') + c.dim(`  (${crossRisks.length}, advisory — what these skills can do TOGETHER)`))
+    for (const r of crossRisks.slice(0, 4)) {
+      out.push('    ' + c.bold(r.skills.map((n) => trunc(n, 20)).join(c.dim(' + '))) + c.dim('  ' + r.kind))
+      out.push('      ' + c.dim(trunc(r.detail, 100)))
+    }
+    if (crossRisks.length > 4) out.push('    ' + c.dim(`… +${crossRisks.length - 4} more  (skillmoo scan --json)`))
+  }
   if (portfolio.broad.length) {
     out.push('  ' + c.dim('over-broad triggers: ') + c.yellow(portfolio.broad.join(', ')))
   }
 
   // The terminal gives you the gist; the full, interactive report lives on the
-  // web (every finding in detail + one-click optimize). An interactive scan
-  // auto-generates that shareable link; CI / piped / --no-share stay local.
-  const noShare = argv.includes('--no-share') || !!process.env.SKILLMOO_NO_SHARE
+  // web (every finding in detail + one-click optimize). Sharing is explicit;
+  // ordinary interactive, CI, piped, JSON, and local-report scans stay local.
   const wantReport = argv.some((x) => x === '--report' || x === '--html')
-  const explicitPublish = argv.includes('--publish')
-  const autoPublish = !!process.stdout.isTTY && !noShare && !explicitPublish && !wantReport && !argv.includes('--json')
-  const wantPublish = explicitPublish || autoPublish
+  const wantPublish = shouldPublishScan(argv, !!process.env.SKILLMOO_NO_SHARE)
 
   out.push('')
   if (!wantPublish) {
     out.push('  ' + c.bold('→ Full report + one-click optimize, in your browser'))
-    out.push('    run  ' + c.cyan('skillmoo scan --publish') + c.dim('   creates a shareable link · grades/findings only, never file contents'))
+    out.push('    run  ' + c.cyan('skillmoo scan --publish') + c.dim('   creates a shareable link · anonymous derived grades/categories only'))
   }
   out.push('  ' + c.dim('·') + ' auto-fix bloat + conflicts  ' + c.cyan('→ skillmoo pro'))
   out.push('')
   console.log(out.join('\n'))
 
-  if (wantReport || wantPublish) {
+  if ((wantReport || wantPublish) && !scanComplete) {
+    console.error(c.red('  Report/publish refused: scan evidence is incomplete; inspect the capped roots or bundle issues above.\n'))
+  } else if (wantReport || wantPublish) {
     // Sanitize: strip home paths to `~` so a shared report carries no identity.
     // optimize stats are computed LOCALLY from the skill's content; only the
     // resulting numbers + change descriptions travel — never the raw skill text.
@@ -233,7 +314,7 @@ async function runScan(argv: string[]): Promise<number> {
       generatedAt: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
       locations: locations.filter((l) => l.exists).map((l) => ({ source: l.source, dir: tilde(l.dir), count: l.count })),
       skills: skills.map((s, i) => {
-        const o = optimizeSkill(found[i].md, bundleOptsFor(found[i].path))
+        const o = optimizeSkill(found[i].md, s.opts)
         const win = o.savedPct > 0
         // Upload ONLY the computed findings from `a` — never the rest of the
         // analysis (which carries the skill's own description text). Red line:
@@ -259,7 +340,7 @@ async function runScan(argv: string[]): Promise<number> {
     }
     if (wantPublish) await publishReport(data)
   }
-  return nUnsafe > 0 ? 2 : 0
+  return scanComplete && nUnsafe === 0 ? 0 : 2
 }
 
 /**
@@ -276,7 +357,21 @@ function runPlan(argv: string[]): number {
     else if (argv[i] === '--dir' && argv[i + 1]) extra.push({ dir: argv[++i], source: 'custom' })
   }
   const { found, locations } = discover([...defaultRoots(), ...extra])
-  if (found.length === 0) {
+  const loaded = found.map((skill) => ({ skill, bundle: readBundle(skill.path) }))
+  const incomplete = [
+    ...locations.filter((location) => location.truncated).map((location) => `${location.source}: discovery was capped or unreadable`),
+    ...loaded.filter(({ bundle }) => !bundle.complete).map(({ skill, bundle }) => `${skill.name}: ${bundle.issues.join('; ')}`),
+  ]
+  if (incomplete.length) {
+    if (json) console.log(JSON.stringify({ error: 'incomplete local evidence', complete: false, issues: incomplete }, null, 2))
+    else {
+      console.error('\n  ' + c.red('Plan refused: installed Skill evidence is incomplete.'))
+      for (const issue of incomplete) console.error('    ' + c.yellow('! ') + safeTerminalText(issue))
+      console.error('')
+    }
+    return 2
+  }
+  if (found.length === 0 && !goal) {
     if (json) { console.log(JSON.stringify({ actions: [], gaps: [], summary: { total: 0 } }, null, 2)); return 0 }
     console.log('\n  ' + c.bold('◇ SkillMOO plan') + '\n\n  ' + c.dim('No skills found. Looked in:'))
     for (const l of locations) console.log('    ' + c.gray(tilde(l.dir)))
@@ -284,8 +379,32 @@ function runPlan(argv: string[]): number {
     return 0
   }
 
-  const plan = composePortfolio(found.map((s) => ({ name: s.name, md: s.md })), goal)
-  if (json) { console.log(JSON.stringify(plan, null, 2)); return 0 }
+  const portfolioSkills = loaded.map(({ skill: s, bundle }) => {
+    return {
+      name: s.name,
+      md: s.md,
+      ...(bundle.bundle ? { bundleText: bundle.text, bundleFiles: bundle.files } : {}),
+    }
+  })
+  const goalPlan = goal ? planPortfolioGoal(portfolioSkills, goal, MATCHABLE_SKILLS) : null
+  const plan = goalPlan?.portfolio ?? composePortfolio(portfolioSkills)
+  if (json) {
+    const actions = plan.actions.map(({ md: _md, bundle: _bundle, ...action }) => action)
+    const payload = goalPlan ? {
+      ...plan,
+      actions,
+      setup: {
+        confidence: goalPlan.setup.confidence,
+        coverage: goalPlan.setup.coverage,
+        abstained: goalPlan.setup.abstained,
+        compositionVerified: goalPlan.setup.compositionVerified,
+        selected: goalPlan.setup.selected.map((x) => ({ name: x.skill.name, installed: x.skill.source === 'installed', role: x.role, stage: x.stage, dependsOn: x.dependsOn, grade: x.skill.grade, gate: x.skill.gate, risk: x.skill.risk, source: x.skill.source, url: x.skill.url })),
+      },
+      recommendedChanges: goalPlan.changes.map((x) => ({ action: x.action, name: x.skill.skill.name, reason: x.reason, source: x.skill.skill.source, url: x.skill.skill.url })),
+      evidence: goalPlan.evidence,
+    } : { ...plan, actions }
+    console.log(JSON.stringify(payload, null, 2)); return 0
+  }
 
   const ACT: Record<string, { label: string; col: (s: string) => string }> = {
     drop: { label: 'DROP', col: c.red }, narrow: { label: 'NARROW', col: c.yellow },
@@ -314,6 +433,24 @@ function runPlan(argv: string[]): number {
     out.push('  ' + c.dim('gaps') + c.dim('  (goal terms no kept skill covers — verify or add)'))
     for (const g of plan.gaps) out.push('    ' + c.yellow('+ ') + c.bold(g.need) + c.dim('  ' + trunc(g.reason, 64)))
   }
+  if (goalPlan) {
+    out.push('')
+    out.push('  ' + c.dim('goal setup') + c.dim(`  (${goalPlan.setup.confidence} confidence · exact combination not runtime-tested)`))
+    if (goalPlan.setup.abstained) {
+      out.push('    ' + c.yellow('No trusted exact match — no adjacent Skill was added to pad the answer.'))
+    } else {
+      for (const selected of goalPlan.alreadyInstalled) {
+        out.push('    ' + c.green('KEEP ') + c.bold(trunc(selected.skill.name, 28)) + c.dim(`  already installed · ${selected.role}/${selected.stage}`))
+      }
+      for (const change of goalPlan.changes) {
+        const label = change.action === 'replace' ? c.yellow('REPLACE ') : c.cyan('ADD ')
+        out.push('    ' + label + c.bold(trunc(change.skill.skill.name, 28)) + c.dim(`  ${change.skill.role}/${change.skill.stage} · ${change.skill.skill.source}`))
+        if (change.skill.skill.url) out.push('        ' + c.cyan(change.skill.skill.url))
+      }
+      if (!goalPlan.changes.length && goalPlan.alreadyInstalled.length) out.push('    ' + c.green('✓ current trusted setup covers the matched goal'))
+      out.push('    ' + c.yellow('INSPECTED') + c.dim(` · ${goalPlan.evidence.contractVersion} · verify this exact setup on your task before relying on it`))
+    }
+  }
   out.push('')
   out.push('  ' + c.dim('apply: ') + c.cyan('skillmoo optimize <file>') + c.dim(' per skill  ·  auto-apply all ') + c.cyan('→ skillmoo pro'))
   out.push('  ' + c.dim(trunc(plan.basis, 96)))
@@ -322,9 +459,150 @@ function runPlan(argv: string[]): number {
   return s.drop > 0 ? 2 : 0
 }
 
+/** `skillmoo match "<goal>"` — the same deterministic trusted retrieval plan as Web.
+ * Fully local: no query, catalog data, or result leaves the machine. */
+function runMatch(argv: string[]): number {
+  const json = argv.includes('--json')
+  const invalid = (message: string) => {
+    if (json) console.log(JSON.stringify({ error: message }))
+    else console.error(`${safeTerminalText(message)}\nusage: skillmoo match "<goal>" [--max 1..3] [--json]`)
+    return 1
+  }
+  let explicitGoal = ''
+  let max = 3
+  let sawGoal = false, sawMax = false
+  const words: string[] = []
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (arg === '--json') continue
+    if (arg === '--goal') {
+      if (sawGoal) return invalid('--goal may be provided only once')
+      if (!argv[i + 1] || argv[i + 1].startsWith('--')) return invalid('--goal requires a value')
+      explicitGoal = argv[++i]
+      sawGoal = true
+      continue
+    }
+    if (arg === '--max') {
+      if (sawMax) return invalid('--max may be provided only once')
+      if (!argv[i + 1] || argv[i + 1].startsWith('--')) return invalid('--max requires a value')
+      const value = Number(argv[++i])
+      if (!Number.isInteger(value) || value < 1 || value > 3) return invalid('--max must be an integer from 1 to 3')
+      max = value
+      sawMax = true
+      continue
+    }
+    if (arg.startsWith('-')) return invalid(`unknown option: ${arg}`)
+    words.push(arg)
+  }
+  const goal = (explicitGoal || words.join(' ')).trim()
+  if (!goal) {
+    return invalid('goal is required')
+  }
+
+  const conflicts = analyzePortfolio(MATCHABLE_SKILLS.map((s) => ({ name: s.name, description: s.description }))).conflicts
+  const high = new Set(conflicts.filter((x) => x.severity === 'high').flatMap((x) => [`${x.a}|${x.b}`, `${x.b}|${x.a}`]))
+  const plan = planGoal(goal, MATCHABLE_SKILLS, high, max)
+  const artifactEntryFor = (name: string) => ARTIFACT_INDEX.entries.find((item) => item.name === name)
+  const evidenceSkill = (skill: (typeof MATCHABLE_SKILLS)[number]) => {
+    const entry = artifactEntryFor(skill.name)
+    return entry?.status === 'pilot-ready' ? { ...skill, evidence: {
+      scope: 'bundle' as const, sourceRef: entry.artifact.source.pinnedUrl,
+      sourcePath: entry.artifact.source.rootPath, sha256: entry.artifact.manifest.bundleSha256,
+    } } : skill
+  }
+  const evidence = summarizeCombinationEvidence(plan.selected.map((x) => evidenceSkill(x.skill)))
+  const artifactFor = (name: string) => {
+    const entry = artifactEntryFor(name)
+    return entry?.status === 'pilot-ready' ? {
+      status: 'complete-package-inspected', artifactId: entry.artifact.artifactId,
+      pinnedUrl: entry.artifact.source.pinnedUrl,
+      setup: `skillmoo catalog prepare --artifact ${entry.artifact.artifactId}`,
+    } : { status: 'manifest-screened', packageEvidence: 'unknown' }
+  }
+  const result = {
+    version: VERSION,
+    engine: 'skillmoo-retrieval/2',
+    goal,
+    catalog: { candidates: MATCHABLE_SKILLS.length, evidenceLevel: 'manifest-screened', excludedCompletePackageGate: COMPLETE_PACKAGE_REJECTED.size, sourceCount: MATCH_CATALOG_META.count },
+    constraints: {
+      forbidden: [...plan.constraints.forbidden],
+      forbiddenCapabilities: [...plan.constraints.forbiddenCapabilities],
+    },
+    confidence: plan.confidence,
+    coverage: Math.round(plan.coverage * 1000) / 1000,
+    abstained: plan.abstained,
+    compositionVerified: plan.compositionVerified,
+    evidence,
+    skills: plan.selected.map((x) => ({
+      name: x.skill.name,
+      role: x.role,
+      stage: x.stage,
+      dependsOn: x.dependsOn,
+      grade: x.skill.grade,
+      gate: x.skill.gate,
+      risk: x.skill.risk,
+      tokens: x.skill.tokens,
+      source: x.skill.source,
+      url: x.skill.url,
+      score: x.score,
+      matched: x.matched,
+      evidence: summarizeSkillEvidence(evidenceSkill(x.skill)),
+      artifact: artifactFor(x.skill.name),
+    })),
+    disclaimer: 'Static recommendation only; runtime utility and composition are not verified.',
+  }
+  if (json) { console.log(JSON.stringify(result, null, 2)); return 0 }
+
+  console.log('')
+  console.log('  ' + c.bold('◇ SkillMOO') + c.dim(' match · local · model-free'))
+  console.log('  ' + c.dim('goal       ') + c.cyan(goal))
+  console.log('  ' + c.dim('catalog    ') + `${MATCHABLE_SKILLS.length} manifest-screened A/B · PASS · low-risk candidates`)
+  if (result.constraints.forbidden.length || result.constraints.forbiddenCapabilities.length) {
+    console.log('  ' + c.dim('excluded   ') + c.yellow([...new Set([...result.constraints.forbidden, ...result.constraints.forbiddenCapabilities])].join(', ')))
+  }
+  console.log('')
+  if (plan.abstained) {
+    console.log('  ' + c.yellow('No constraint-safe exact match.'))
+    console.log('  ' + c.dim('SkillMOO refused to pad the result with adjacent skills. Try a more specific goal or inspect the Web catalog.'))
+  } else {
+    console.log('  ' + c.green(`✓ ${plan.selected.length} minimal match${plan.selected.length === 1 ? '' : 'es'}`) + c.dim(`  ·  ${plan.confidence} confidence  ·  ${Math.round(plan.coverage * 100)}% catalog-term coverage`))
+    console.log('  ' + c.yellow('INSPECTED') + c.dim(` · ${evidence.contractVersion} · exact setup not runtime-tested`))
+    for (const x of plan.selected) {
+      console.log('')
+      console.log('  ' + gradeBadge(x.skill.grade) + '  ' + c.bold(x.skill.name) + c.dim(`  ·  ${x.role}/${x.stage}`))
+      console.log('     ' + c.green('PASS') + c.dim(` · low risk · ${x.skill.tokens.toLocaleString()} tok · ${x.skill.source}`))
+      console.log('     ' + c.dim('matched: ') + x.matched.slice(0, 6).join(', '))
+      const artifact = artifactFor(x.skill.name)
+      if (artifact.status === 'complete-package-inspected') {
+        console.log('     ' + c.green('COMPLETE PACKAGE') + c.dim(` · ${artifact.artifactId}`))
+        console.log('     ' + c.cyan(artifact.pinnedUrl!))
+        console.log('     ' + c.dim(`setup: ${artifact.setup}`))
+      } else {
+        console.log('     ' + c.yellow('MANIFEST ONLY') + c.dim(' · package contents unknown; mutable source link'))
+        console.log('     ' + c.cyan(x.skill.url))
+      }
+    }
+  }
+  console.log('')
+  console.log('  ' + c.dim('Static recommendation only — re-scan the complete pinned package before setup; runtime utility and composition are not verified.'))
+  console.log('  ' + c.dim('Your goal stays local. No model and no network request are used.'))
+  console.log('')
+  return 0
+}
+
 function runReport(file?: string): number {
   if (!file) { console.error('usage: skillmoo report <SKILL.md>'); return 1 }
-  const a = analyzeSkill(readFileSync(file, 'utf8'), bundleOptsFor(file))
+  const primary = readPrimarySkill(file)
+  if (!primary.ok) {
+    console.error('\n  ' + c.red('Report refused: ' + primary.issue) + '\n')
+    return 2
+  }
+  const bundle = readBundle(file)
+  if (!bundle.complete) {
+    console.error('\n  ' + c.red('Report refused: ' + bundleIssueSummary(bundle.issues)) + '\n')
+    return 2
+  }
+  const a = analyzeSkill(primary.md, bundleOptsFor(bundle))
   console.log('\n  ' + gradeBadge(a.overall.grade) + '  ' + c.bold(a.frontmatter.name ?? relative(process.cwd(), file)) + c.dim('  ·  ' + a.tokens.total + ' tok  ·  gate ' + a.overall.gate))
   console.log('  ' + c.dim(a.overall.verdict) + '\n')
   for (const f of a.findings) {
@@ -339,12 +617,22 @@ function runReport(file?: string): number {
 
 async function runOptimize(file: string | undefined, argv: string[]): Promise<number> {
   if (!file) { console.error('usage: skillmoo optimize <SKILL.md> [--pro]'); return 1 }
-  const md = readFileSync(file, 'utf8')
+  const primary = readPrimarySkill(file)
+  if (!primary.ok) {
+    console.error('\n  ' + c.red('Optimize refused: ' + primary.issue) + '\n')
+    return 2
+  }
+  const bundle = readBundle(file)
+  if (!bundle.complete) {
+    console.error('\n  ' + c.red('Optimize refused: ' + bundleIssueSummary(bundle.issues)) + '\n')
+    return 2
+  }
+  const md = primary.md
 
   if (!argv.includes('--pro')) {
     // Same bundle context the scan uses — so optimize's suggestions (e.g. a dangling
     // references/ link) match what `skillmoo scan` reported. Read-only.
-    const o = optimizeSkill(md, bundleOptsFor(file))
+    const o = optimizeSkill(md, bundleOptsFor(bundle))
     console.log('')
     if (o.savedPct > 0) {
       console.log('  ' + c.bold('one-click optimize') + '   ' + c.dim(`${o.tokensBefore} → `) + c.green(String(o.tokensAfter)) + c.dim(' tok  ') + c.bold(c.green(`−${o.savedPct}%`)) + (o.gradeAfter !== o.gradeBefore ? c.dim('   grade ' + o.gradeBefore + '→') + c.green(o.gradeAfter) : ''))
@@ -398,7 +686,7 @@ async function runOptimize(file: string | undefined, argv: string[]): Promise<nu
     return (j.choices?.[0]?.message?.content ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
   }
 
-  const r = await optimizePro(md, chat, bundleOptsFor(file))
+  const r = await optimizePro(md, chat, bundleOptsFor(bundle))
   s.write(`\n  ${c.bold(r.mode === 'semantic' ? '✓ Pro semantic optimize — verified' : '↩ Pro rewrite rejected → safe rule-based fallback')}   `)
   s.write(c.dim(`${r.tokensBefore} → `) + (r.savedPct > 0 ? c.green(String(r.tokensAfter)) : String(r.tokensAfter)) + c.dim(' tok') + (r.savedPct > 0 ? '  ' + c.bold(c.green(`−${r.savedPct}%`)) : '') + (r.gradeAfter !== r.gradeBefore ? c.dim('  grade ' + r.gradeBefore + '→') + c.green(r.gradeAfter) : '') + '\n')
   for (const ck of r.checks) s.write(`    ${ck.pass ? c.green('✓') : c.red('✗')} ${c.dim(ck.name)} ${c.dim('— ' + ck.detail)}\n`)
@@ -416,19 +704,40 @@ function help(): void {
 
   ${c.bold('skillmoo scan')}                ${c.dim('grade skills across Claude Code, Codex, Cursor, Copilot, Cline, Windsurf')}
     ${c.dim('--report [file]')}            ${c.dim('write a shareable HTML report (local file)')}
-    ${c.dim('--publish')}                  ${c.dim('force the shareable skillmoo.com/r/<id> report link')}
+    ${c.dim('--publish')}                  ${c.dim('explicitly upload a derived report for a shareable skillmoo.com/r/<id> link')}
     ${c.dim('--no-share')}                 ${c.dim('never upload — keep the scan fully local (or SKILLMOO_NO_SHARE=1)')}
     ${c.dim('--json')}                     ${c.dim('machine-readable output')}
     ${c.dim('--dir <path>')}               ${c.dim('add an extra skills root')}
   ${c.bold('skillmoo plan')}                ${c.dim('value-max action plan: keep/optimize/merge/narrow/drop + gaps')}
     ${c.dim('--goal "<text>"')}            ${c.dim('weight the plan toward what you\'re trying to build')}
+  ${c.bold('skillmoo match')} ${c.dim('"<goal>"')}     ${c.dim('find a trusted minimal Skill plan (same engine as Web, fully local)')}
+    ${c.dim('--max <1..3>')}               ${c.dim('maximum selected Skills; default 3, never padded')}
+    ${c.dim('--json')}                     ${c.dim('machine-readable result for scripts and agents')}
   ${c.bold('skillmoo report')} ${c.dim('<file>')}       ${c.dim('full report for one SKILL.md')}
   ${c.bold('skillmoo optimize')} ${c.dim('<file>')}     ${c.dim('rule-based one-click optimize (100% local)')}
     ${c.dim('--pro')}                      ${c.dim('AI semantic rewrite, verified safe — uses YOUR model key (SKILLMOO_MODEL_KEY)')}
+  ${c.bold('skillmoo verify')}              ${c.dim('paired current-vs-proposed runtime check in one declared environment')}
+    ${c.dim('--suite <suite.json>')}        ${c.dim('objective, versioned task suite')}
+    ${c.dim('--baseline-skill <file>')}     ${c.dim('current ordered setup; repeat for multiple Skills')}
+    ${c.dim('--baseline-empty')}            ${c.dim('explicitly declare that the current setup has no Skills')}
+    ${c.dim('--skill <file>')}              ${c.dim('proposed ordered setup; repeat for multiple Skills')}
+    ${c.dim('--proposed-empty')}            ${c.dim('explicitly declare that the proposed setup has no Skills')}
+    ${c.dim('--send-to-model')}             ${c.dim('explicitly allow suite + Skill egress to YOUR model endpoint')}
+    ${c.dim('--timeout-ms <1000..300000>')} ${c.dim('per-request provider timeout; default 30000')}
+    ${c.dim('--simulate')}                  ${c.dim('test the harness only; can never become verified-here')}
+    ${c.dim('summary [--dir <path>]')}      ${c.dim('local self-attested receipt metrics')}
+  ${c.bold('skillmoo setup')}               ${c.dim('preview, explicitly apply, rollback, or recover a local complete Skill setup')}
+    ${c.dim('prepare --source <dir>')}      ${c.dim('freeze a no-mutation plan; repeat --source for a combination')}
+    ${c.dim('apply --plan <file>')}         ${c.dim('requires --confirm <plan-id>; installs no remote content and runs no package code')}
+    ${c.dim('status --target-root <dir>')}  ${c.dim('read-only transaction and recovery status')}
+    ${c.dim('rollback --receipt <file>')}   ${c.dim('requires --confirm <receipt-id>; refuses post-install drift')}
+    ${c.dim('recover --mode rollback')}     ${c.dim('requires --confirm <transaction-id>; never guesses or rolls forward')}
+  ${c.bold('skillmoo catalog')}             ${c.dim('offline pinned-complete artifact pilot in the exact CLI package')}
+    ${c.dim('list')}                        ${c.dim('show embedded artifact IDs, evidence, license, files, and bytes')}
+    ${c.dim('prepare --artifact <sa_id>')}  ${c.dim('materialize exact bytes into private cache and create a no-target-mutation setup plan')}
 
-  ${c.dim('Analysis is 100% local — no model, no signup. (Only `optimize --pro` calls a model, your own endpoint.)')}
-  ${c.dim('An interactive `scan` also uploads an anonymized report — grades & findings only, never file contents —')}
-  ${c.dim('for the shareable link. Use --no-share (or --json / a piped/CI run) to stay fully offline.')}
+  ${c.dim('Static analysis is 100% local — no model, no signup. `optimize --pro` and explicitly approved `verify` use your endpoint.')}
+  ${c.dim('All static commands stay offline unless you explicitly pass `scan --publish`; --no-share always wins.')}
 `)
 }
 
@@ -439,12 +748,16 @@ async function main(): Promise<void> {
     case undefined:
     case 'scan': code = await runScan(rest); break
     case 'plan': code = runPlan(rest); break
+    case 'match': code = runMatch(rest); break
+    case 'verify': code = await runVerifyCommand(rest, VERSION); break
+    case 'setup': code = runSetupCommand(rest); break
+    case 'catalog': code = runCatalogCommand(rest); break
     case 'report': code = runReport(rest.find((a) => !a.startsWith('-'))); break
     case 'optimize': code = await runOptimize(rest.find((a) => !a.startsWith('-')), rest); break
     case '-v': case '--version': case 'version': console.log(VERSION); break
     case '-h': case '--help': case 'help': help(); break
-    default: console.error(`unknown command: ${cmd}\n`); help(); code = 1
+    default: console.error(`unknown command: ${safeTerminalText(cmd)}\n`); help(); code = 1
   }
-  process.exit(code)
+  process.exitCode = code
 }
-main()
+void main()

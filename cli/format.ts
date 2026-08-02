@@ -1,6 +1,20 @@
+/* oxlint-disable no-control-regex */
 /** Tiny ANSI helpers — no dependency. Colors auto-disable off a TTY or with NO_COLOR. */
 const on = !!process.stdout.isTTY && !process.env.NO_COLOR && process.env.TERM !== 'dumb'
-const w = (a: number, b: number) => (s: string | number) => (on ? `\x1b[${a}m${s}\x1b[${b}m` : `${s}`)
+/** Remove terminal control/invisible direction sequences from untrusted labels. */
+export function safeTerminalText(value: string | number): string {
+  return String(value)
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, '')
+    .replace(/[\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g, '')
+    .replace(/[\u{e0000}-\u{e007f}]/gu, '')
+    .replace(/[\r\n\t]+/g, ' ')
+}
+const w = (a: number, b: number) => (s: string | number) => {
+  const safe = safeTerminalText(s)
+  return on ? `\x1b[${a}m${safe}\x1b[${b}m` : safe
+}
 
 export const c = {
   bold: w(1, 22), dim: w(2, 22),
@@ -10,6 +24,16 @@ export const c = {
 
 /** visible length ignoring ANSI escapes, so padding lines up when colored */
 export const vlen = (s: string): number => s.replace(/\x1b\[[0-9;]*m/g, '').length
+/** greedy word wrap for explanatory prose — plain text only, apply colour after */
+export function wrapTo(s: string, width: number): string[] {
+  const out: string[] = []
+  let line = ''
+  for (const w of s.split(/\s+/)) {
+    if (line && line.length + 1 + w.length > width) { out.push(line); line = w } else line = line ? line + ' ' + w : w
+  }
+  if (line) out.push(line)
+  return out
+}
 export const padEndV = (s: string, n: number): string => s + ' '.repeat(Math.max(0, n - vlen(s)))
 
 /** A → green, B → green, C → yellow, D → orange-ish, F → red. */

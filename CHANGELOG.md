@@ -8,6 +8,31 @@ project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Goal-based trusted matching shared by CLI and Web.** `skillmoo match "<goal>"` and
+  `skillmoo plan --goal "<goal>"` use the same deterministic bilingual retrieval and
+  combination planner. Automatic candidates are limited to A/B, safety-gate PASS,
+  low-risk Skills; exclusions are preserved; combinations are capped and never padded;
+  unsupported goals abstain. Output separates per-Skill inspection from the untested
+  exact combination instead of implying runtime success.
+- **Environment-scoped paired verification.** `skillmoo verify` runs objective JSON task
+  suites against declared current/proposed ordered setups with shared seeds and model
+  settings. Egress requires `--send-to-model`; simulations cannot become verified
+  evidence; private append-only receipts omit prompts, outputs, Skill contents, and
+  credentials and remain explicitly local self-attestations.
+- **Transactional complete-package setup.** `skillmoo setup` separates no-mutation
+  prepare from exact-ID-confirmed apply, analyzes the complete directory, executes no
+  package code, rechecks source/target drift, compensates caught failures, and provides
+  idempotent rollback plus explicit crash recovery without guessing.
+- **Pinned offline artifact pilot.** `skillmoo catalog` embeds four complete MIT Skill
+  packages bound to one immutable upstream repository commit. Exact bytes, Git blob
+  identities, license evidence, full-bundle assessment, immutable cache state, and the
+  exact CLI package version are validated before setup planning. The catalog covers all
+  115 match entries with reason-coded non-embedded states; a complete-package gate
+  failure is excluded from automatic matching.
+- **Independent release gates** for matching, portfolio planning, verification, setup,
+  and Catalog v2, including invalid options, tamper, offline, concurrency, recovery, and
+  bundled-binary parity checks. `npm run eval:release` runs the aggregate public gate.
+
 - **`src/lib/provenance.ts` — where every grade-deciding number comes from.** 17 constants,
   each tagged `spec` / `harness` / `standard` / `skillmoo`, and — where borrowed — carrying
   the first-party URL it was taken from. 12 of 17 (71%) are verbatim from a published
@@ -22,6 +47,18 @@ project aims to follow [Semantic Versioning](https://semver.org/).
   from the modules that own them, so the registry cannot drift; a borrowed constant without a
   first-party source fails; an original one whose justification names no measurement fails;
   and any exported scoring constant that is neither declared nor exempted by name fails.
+
+### Security
+
+- Hosted scan reports are minimized to anonymous ordinal labels and derived verdicts;
+  names, paths, details, evidence snippets, raw content, and optimization changes stay local.
+- Discovery rejects symbolic-link escapes and oversized entry points; terminal output strips
+  control, bidi, and invisible tag sequences from untrusted labels.
+- Verification binds binary and other regular assets into exact setup identity, rejects
+  duplicate setups, refuses redirects and non-transient retries, and enforces aggregate
+  request/input/output ceilings. Recovery refuses a live foreign transaction owner.
+- CI runs the aggregate release gate, unsafe-scan smoke test, and package dry-run on
+  Node 18.19.0 and Node 22.
 
 ### Fixed
 

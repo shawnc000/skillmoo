@@ -8,20 +8,21 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18.19.0, 22]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
-      - run: npm run typecheck
-      - run: npm run eval:provenance
-      - run: npm run eval:methodology
-      - run: npm run build
+      - run: npm run eval:release
       - name: smoke test — the bundle runs and grades correctly
         run: |
           node bin/skillmoo.mjs --version
           # scan exits 2 when it flags an unsafe skill (the CI-gate feature); the demo
           # set includes one on purpose, so exit 2 IS the pass here.
           node bin/skillmoo.mjs scan --dir examples/demo-skills --no-share || test $? -eq 2
+      - run: npm pack --dry-run

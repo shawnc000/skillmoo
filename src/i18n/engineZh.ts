@@ -48,6 +48,9 @@ const FINDING_TITLE: Record<string, string> = {
   'Description too long': 'description 太长',
   'Description doesn’t say WHEN to use it': 'description 没说清什么时候该用它',
   'Trigger is too broad': '触发条件太宽泛',
+  'Over the spec’s body budget': '超出官方正文 token 预算',
+  'Over the spec’s line budget': '超出官方 500 行预算',
+  'Could defer detail to references/': '可把细节挪进 references/',
   'Description contains filler': 'description 里有废话',
   // Token efficiency
   'Bloated: high token cost': '内容冗长 · token 成本偏高',
