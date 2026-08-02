@@ -42,7 +42,8 @@
     "build": "node scripts/build-cli.mjs",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "node scripts/build-cli.mjs",
-    "eval:provenance": "tsx scripts/eval-provenance.ts"
+    "eval:provenance": "tsx scripts/eval-provenance.ts",
+    "eval:methodology": "tsx scripts/eval-methodology.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

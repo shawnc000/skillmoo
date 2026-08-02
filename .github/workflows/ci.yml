@@ -16,6 +16,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run eval:provenance
+      - run: npm run eval:methodology
       - run: npm run build
       - name: smoke test — the bundle runs and grades correctly
         run: |

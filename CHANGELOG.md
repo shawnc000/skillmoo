@@ -25,6 +25,12 @@ project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The public rating formula now matches rubric 2.0.** `docs/how-we-rate.md` still
+  published the removed 1.0 weighted-average formula even though the engine has used a
+  subtractive risk penalty since 0.3.10. The method now names the live rubric, formula,
+  grade cuts, and capability-vs-threat semantics. `npm run eval:methodology` imports the
+  live constants and fails CI if those grade-deciding facts drift again. Documentation
+  and verification only; no score or historical result changes.
 - **The credential-exfiltration rule was firing only on legitimate code — 3 for 3.** Measured
   across 140 public skills from 9 repos (87 with a bundle): this `critical` rule produced 3
   findings and **all three were false positives** (3.4%, 95% CI 1.2–9.7%), with **zero true

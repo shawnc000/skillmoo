@@ -35,15 +35,26 @@ narrow one.
 
 ## The grade is a reproducible score vector
 
-The overall 0–100 score is a fixed weighting of per-axis subscores:
+The current rubric is **`skillmoo-static/2.0`**. It first computes craft quality from
+the three dimensions a text edit can improve, then subtracts the full risk deficit:
 
-```
-overall = structure·0.18 + trigger·0.24 + tokens·0.18 + risk·0.40
+```text
+rubric = skillmoo-static/2.0
+quality = structure*0.25 + trigger*0.45 + tokens*0.30
+overall = clamp(quality - (100 - risk), 0, 100)
+grades = A>=85,B>=72,C>=58,D>=42
 ```
 
-Each grade ships with its subscores + weights + a rubric version string, so **anyone can
-re-derive the letter grade** from the vector. The weights and cutoffs are the single
-source of truth in the engine — not a hidden model.
+Risk is deliberately **subtractive, not averaged as a fourth weighted axis**. A real
+threat therefore bites at full strength instead of being diluted. Ordinary disclosed
+capability — reading a runtime key, calling an API, or running a scoped subprocess — is
+shown by the safety gate for human review but does not lower craft quality by itself.
+Measured threats and fixable security-hygiene defects do lower the risk score.
+
+Each grade ships with its subscores, rubric version, grade, safety gate, and evidence
+state, so **anyone can re-derive the letter grade** from the vector. The formula and
+cutoffs above are machine-checked against the engine in `npm run eval:methodology`; the
+engine constants remain the single source of truth, not this prose and not a hidden model.
 
 ## The honesty rules (non-negotiable)
 
